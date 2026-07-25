@@ -96,7 +96,7 @@ func TestCacheMatching(t *testing.T) {
 
 func TestCNAMEResolvePath(t *testing.T) {
 	// testCases := []string{"blog.dnsimple.com", "www.github.com", "www.apple.com", "dns1.p01.nsone.net"}
-	testCases := []string{"google.com", "gisma.com"} 
+	testCases := []string{"google.com", "gisma.com", "vercel.com", "apple.com", "blog.dnsimple.com", "www.rfc-editor.org"} 
 	//, "gisma.com"}
 	v := os.Getenv("RESOLVY_LOGS")
 	var writer io.Writer
@@ -109,9 +109,40 @@ func TestCNAMEResolvePath(t *testing.T) {
 
 	for _, test := range testCases {
 		t.Run(test, func(t *testing.T) {
-			q := NewQuestion(test, dns.TypeA)
-
 			r := Resolver{logger: logger, Cache: make(Cache)}
+			q := NewQuestion(test, dns.TypeMX)
+			answ_rr, err := r.resolveQ(q, 0)
+
+			if err != nil {
+				t.Error("err during dns exchange: ", err.Error())
+			}
+			if len(answ_rr) == 0 {
+				t.Error("No domain name found")
+			}
+			for _, rr := range answ_rr {
+				t.Log(rr.String())
+			}
+		})
+	}
+}
+
+func TestResolveWithWarmCache(t *testing.T) {
+	// testCases := []string{"blog.dnsimple.com", "www.github.com", "www.apple.com", "dns1.p01.nsone.net"}
+	testCases := []string{"google.com", "gisma.com", "vercel.com", "apple.com", "blog.dnsimple.com", "www.rfc-editor.org"} 
+	//, "gisma.com"}
+	v := os.Getenv("RESOLVY_LOGS")
+	var writer io.Writer
+	if v == "" {
+		writer = io.Discard
+	} else {
+		writer = os.Stdout
+	}
+	logger := slog.New(slog.NewTextHandler(writer, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	r := Resolver{logger: logger, Cache: make(Cache)}
+
+	for _, test := range testCases {
+		t.Run(test, func(t *testing.T) {
+			q := NewQuestion(test, dns.TypeMX)
 			answ_rr, err := r.resolveQ(q, 0)
 
 			if err != nil {

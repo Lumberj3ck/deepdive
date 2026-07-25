@@ -58,15 +58,18 @@ func (r *Resolver) queryQ(q dns.Question, server string) *dns.Msg {
 	msg := new(dns.Msg)
 	c := new(dns.Client)
 	msg.Question = append(msg.Question, q)
-	resp, rtt, err := c.Exchange(msg, server+":53")
-	r.logger.Debug(q.String(), "To: ", server, "RTT: ", rtt)
+	r.logger.Debug(q.String(), "To: ", server)
 
-	if err != nil {
-		// retry with tcp
-		slog.Warn("Got err during dns query request: ", "err", err)
-		return nil
+	for range 5{
+		resp, _, err := c.Exchange(msg, server+":53")
+
+		if err == nil{
+			return resp
+		} else {
+			r.logger.Warn("Got err during dns query request: ", "err", err)
+		}
 	}
-	return resp
+	return &dns.Msg{}
 }
 
 // NS_RR.Hdr.Name -- is actuall ownership of this refference
@@ -130,7 +133,6 @@ func (r *Resolver) resolveQ(q dns.Question, depth int) ([]dns.RR, error) {
 	//             "close" the resolver is to SNAME
 
 	// var visited map[string]bool
-	
 	var match int
 	for range 20 {
 		zone := r.Cache.getClosestZone(q.Name, match)
