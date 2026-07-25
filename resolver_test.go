@@ -96,7 +96,8 @@ func TestCacheMatching(t *testing.T) {
 
 func TestCNAMEResolvePath(t *testing.T) {
 	// testCases := []string{"blog.dnsimple.com", "www.github.com", "www.apple.com", "dns1.p01.nsone.net"}
-	testCases := []string{"google.com", "gisma.com"}
+	testCases := []string{"google.com", "gisma.com"} 
+	//, "gisma.com"}
 	v := os.Getenv("RESOLVY_LOGS")
 	var writer io.Writer
 	if v == "" {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 	"sync"
 
 	"github.com/miekg/dns"
@@ -129,6 +130,7 @@ func (r *Resolver) resolveQ(q dns.Question, depth int) ([]dns.RR, error) {
 	//             "close" the resolver is to SNAME
 
 	// var visited map[string]bool
+	
 	var match int
 	for range 20 {
 		zone := r.Cache.getClosestZone(q.Name, match)
@@ -138,41 +140,44 @@ func (r *Resolver) resolveQ(q dns.Question, depth int) ([]dns.RR, error) {
 		}
 
 		servers := r.Cache[zone]
-		r.logger.Info("Got closest zone: ", "zone", zone)
+		r.mu.Lock()
+		r.logger.Info("Got closest zone: ", "zone", zone, "depth", depth)
+		r.mu.Unlock()
 
 		var serverIP net.IP
 		resolving := make(map[string]bool)
 		for serverIP == nil{
 			for domainName, server_RR := range servers {
 				if server_RR.ip == nil {
+					r.mu.RLock()
 					if resolving[server_RR.Ns] {
 						continue
 					}
-					go func() {
-						q := dns.Question{Name: server_RR.Ns, Qtype: dns.TypeA, Qclass: dns.ClassINET}
-						resp, err := r.resolveQ(q, depth+1)
-						if err != nil {
-							return
-						}
+					r.mu.RUnlock()
+					resolving[server_RR.Ns] = true
+					q := dns.Question{Name: server_RR.Ns, Qtype: dns.TypeA, Qclass: dns.ClassINET}
+					resp, err := r.resolveQ(q, depth+1)
+					if err != nil {
+						r.logger.Warn("Got err during resolve of NS: ", "err", err)
+					}
 
-						r.mu.Lock()
-						for _, rr := range resp {
-							if rr, ok := rr.(*dns.A); ok {
-								s := servers[domainName]
-								s.ip = rr.A
-								servers[domainName] = s
-							}
+					for _, rr := range resp {
+						if rr, ok := rr.(*dns.A); ok {
+							s := servers[domainName]
+							s.ip = rr.A
+							servers[domainName] = s
 						}
-						delete(resolving, server_RR.Ns)
-						r.mu.Unlock()
-					}()
+					}
+					delete(resolving, server_RR.Ns)
 				} else {
 					serverIP = server_RR.ip
 					break
 				}
 			}
 		}
-		r.logger.Info("Resolved ", "server ip", serverIP, "b", len(serverIP.String()) == 0, "b", serverIP == nil)
+		r.mu.Lock()
+		r.logger.Info("Resolved ", "server ip", serverIP, "depth", depth)
+		r.mu.Unlock()
 
 		resp := r.queryQ(q, serverIP.String())
 		// analyze response
@@ -186,6 +191,7 @@ func (r *Resolver) resolveQ(q dns.Question, depth int) ([]dns.RR, error) {
 			// com.  l.gtld-.com
 			// l.gtld-.com 182.23
 			for _, extr := range resp.Extra {
+				// or AAAA 
 				extra_rr, ok := extr.(*dns.A)
 				if !ok {
 					continue
@@ -275,6 +281,7 @@ func handleAll(w dns.ResponseWriter, m *dns.Msg) {
 	}
 }
 
+
 func main() {
 	// name := "www.example.com"
 	// answers, err := resolve(name, dns.TypeAAAA)
@@ -285,30 +292,37 @@ func main() {
 	// for _, rr := range answers {
 	// 	fmt.Println(strings.TrimSpace(rr.String()))
 	// }
-	udpServer := dns.Server{Addr: "127.0.0.1:5356", Net: "udp"}
-	dns.HandleFunc(".", handleAll)
-	var wg chan struct{}
 
-	go func() {
-		err := udpServer.ListenAndServe()
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	q := dns.Question{Name: dns.Fqdn("m.gtld-servers.net."), Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	r := Resolver{logger: logger, Cache: make(Cache)}
 
-		if err != nil {
-			slog.Error(err.Error())
-		}
-		wg <- struct{}{}
-	}()
+	r.resolveQ(q, 0)
 
-	tcpServer := dns.Server{Addr: "127.0.0.1:5356", Net: "tcp"}
-
-	go func() {
-		err := tcpServer.ListenAndServe()
-
-		if err != nil {
-			slog.Error(err.Error())
-		}
-
-		wg <- struct{}{}
-	}()
-	slog.Info("Started tcp and udp servers")
-	<-wg
+	// udpServer := dns.Server{Addr: "127.0.0.1:5356", Net: "udp"}
+	// dns.HandleFunc(".", handleAll)
+	// var wg chan struct{}
+	//
+	// go func() {
+	// 	err := udpServer.ListenAndServe()
+	//
+	// 	if err != nil {
+	// 		slog.Error(err.Error())
+	// 	}
+	// 	wg <- struct{}{}
+	// }()
+	//
+	// tcpServer := dns.Server{Addr: "127.0.0.1:5356", Net: "tcp"}
+	//
+	// go func() {
+	// 	err := tcpServer.ListenAndServe()
+	//
+	// 	if err != nil {
+	// 		slog.Error(err.Error())
+	// 	}
+	//
+	// 	wg <- struct{}{}
+	// }()
+	// slog.Info("Started tcp and udp servers")
+	// <-wg
 }
