@@ -55,7 +55,7 @@ type Resolver struct {
 	mu     sync.RWMutex
 }
 
-const retries = 5
+const retries = 2
 var dataTruncatedErr = errors.New("Udp datagram truncated, retry with tcp")
 var serverNoRespErr = fmt.Errorf("Server didn't respond after %d retries ", retries)
 
@@ -70,20 +70,25 @@ func (r *Resolver) queryQ(q dns.Question, server string, net string) (*dns.Msg, 
 	msg.Question = append(msg.Question, q)
 	r.logger.Debug(q.String(), "To: ", server)
 
-	for range retries{
-		r.logger.Info(fmt.Sprintf("Doing %s query to %s with %s", net, server, q.Name))
+	r.logger.Info(fmt.Sprintf("Doing %s query to %s with %s", net, server, q.Name))
+	if net == udpNet{
+		for range retries{
+			resp, _, err := c.Exchange(msg, server+":53")
+
+			if err != nil{
+				r.logger.Warn("Got err during dns query request: ", "err", err)
+				continue
+			}
+
+			if resp.Truncated{
+				return &dns.Msg{}, dataTruncatedErr
+			}
+
+			return resp, nil
+		}
+	} else {
 		resp, _, err := c.Exchange(msg, server+":53")
-
-		if err != nil{
-			r.logger.Warn("Got err during dns query request: ", "err", err)
-			continue
-		}
-
-		if resp.Truncated{
-			return &dns.Msg{}, dataTruncatedErr
-		}
-
-		return resp, nil
+		return resp, err
 	}
 
 	return &dns.Msg{}, serverNoRespErr
@@ -196,7 +201,7 @@ func (r *Resolver) resolveQ(q dns.Question, depth int) ([]dns.RR, error) {
 					}
 				} 
 
-				serverIP = server_RR.ip
+				serverIP = servers[domainName].ip
 				break
 			}
 		}
@@ -281,7 +286,7 @@ func (r *Resolver) resolveQ(q dns.Question, depth int) ([]dns.RR, error) {
 		}
 	}
 
-	return nil, nil
+	return nil, notFoundErr
 }
 
 func handleAll(w dns.ResponseWriter, m *dns.Msg) {
