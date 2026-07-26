@@ -56,6 +56,7 @@ type Resolver struct {
 }
 
 const retries = 2
+
 var dataTruncatedErr = errors.New("Udp datagram truncated, retry with tcp")
 var serverNoRespErr = fmt.Errorf("Server didn't respond after %d retries ", retries)
 
@@ -71,17 +72,17 @@ func (r *Resolver) queryQ(q dns.Question, server string, net string) (*dns.Msg, 
 	r.logger.Debug(q.String(), "To: ", server)
 
 	r.logger.Info(fmt.Sprintf("Doing %s query to %s with %s", net, server, q.Name))
-	if net == udpNet{
+	if net == udpNet {
 		msg.SetEdns0(1232, false)
-		for range retries{
+		for range retries {
 			resp, _, err := c.Exchange(msg, server+":53")
 
-			if err != nil{
+			if err != nil {
 				r.logger.Warn("Got err during dns query request: ", "err", err)
 				continue
 			}
 
-			if resp.Truncated{
+			if resp.Truncated {
 				return &dns.Msg{}, dataTruncatedErr
 			}
 
@@ -99,6 +100,15 @@ func (r *Resolver) queryQ(q dns.Question, server string, net string) (*dns.Msg, 
 type NS_RR struct {
 	ip net.IP
 	dns.NS
+}
+
+func containsSoa(ns []dns.RR) bool {
+	for _, rr := range ns{
+		if _, ok := rr.(*dns.SOA); ok{
+			return true
+		}
+	}
+	return false
 }
 
 type Zone = string
@@ -179,7 +189,7 @@ func (r *Resolver) resolveQ(q dns.Question, depth int) ([]dns.RR, error) {
 				break
 			}
 		}
-		if serverIP == nil{
+		if serverIP == nil {
 			for domainName, server_RR := range servers {
 				if visited[server_RR.ip.String()] {
 					continue
@@ -200,14 +210,14 @@ func (r *Resolver) resolveQ(q dns.Question, depth int) ([]dns.RR, error) {
 							servers[domainName] = s
 						}
 					}
-				} 
+				}
 
 				serverIP = servers[domainName].ip
 				break
 			}
 		}
 
-		if serverIP == nil{
+		if serverIP == nil {
 			return nil, notFoundErr
 		}
 
@@ -219,26 +229,28 @@ func (r *Resolver) resolveQ(q dns.Question, depth int) ([]dns.RR, error) {
 		visited[serverIP.String()] = true
 		r.logger.Info("Received after udp err ", "err", err)
 
-		if errors.Is(err, dataTruncatedErr) || errors.Is(err, serverNoRespErr){
+		if errors.Is(err, dataTruncatedErr) || errors.Is(err, serverNoRespErr) {
 			resp, err = r.queryQ(q, serverIP.String(), tcpNet)
 
-			if err != nil{
-				// add to visited
+			if err != nil {
+				// Grab next nameserver refference if available
 				continue
 			}
 		}
-
 
 		if len(resp.Answer) > 0 {
 			return resp.Answer, nil
 		}
 
+		// nodata, name exists, however not such RR type available
+		if resp.Rcode == dns.RcodeSuccess && len(resp.Answer) == 0 && resp.Authoritative && containsSoa(resp.Ns){
+			return nil, nil
+		}
+
 		gluedRefferences := map[string]NS_RR{}
 		if len(resp.Extra) > 0 {
-			// com.  l.gtld-.com
-			// l.gtld-.com 182.23
 			for _, extr := range resp.Extra {
-				// or AAAA 
+				// or AAAA
 				extra_rr, ok := extr.(*dns.A)
 				if !ok {
 					continue
@@ -327,7 +339,6 @@ func handleAll(w dns.ResponseWriter, m *dns.Msg) {
 		slog.Error("WriteMsg failed: ", "err: ", err)
 	}
 }
-
 
 func main() {
 	// name := "www.example.com"

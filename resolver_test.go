@@ -96,7 +96,7 @@ func TestCacheMatching(t *testing.T) {
 
 func TestCNAMEResolvePath(t *testing.T) {
 	// testCases := []string{"blog.dnsimple.com", "www.github.com", "www.apple.com", "dns1.p01.nsone.net"}
-	testCases := []string{"google.com", "gisma.com", "vercel.com", "apple.com", "blog.dnsimple.com", "www.rfc-editor.org"} 
+	testCases := []string{"google.com", "gisma.com", "vercel.com", "apple.com", "blog.dnsimple.com", "www.rfc-editor.org"}
 	//, "gisma.com"}
 	v := os.Getenv("RESOLVY_LOGS")
 	var writer io.Writer
@@ -124,12 +124,12 @@ func TestCNAMEResolvePath(t *testing.T) {
 			}
 		})
 	}
-	
+
 }
 
 func TestResolveWithWarmCache(t *testing.T) {
 	// testCases := []string{"blog.dnsimple.com", "www.github.com", "www.apple.com", "dns1.p01.nsone.net"}
-	testCases := []string{"google.com", "gisma.com", "vercel.com", "apple.com", "blog.dnsimple.com", "www.rfc-editor.org"} 
+	testCases := []string{"google.com", "gisma.com", "vercel.com", "apple.com", "blog.dnsimple.com", "www.rfc-editor.org"}
 	//, "gisma.com"}
 	v := os.Getenv("RESOLVY_LOGS")
 	var writer io.Writer
@@ -141,7 +141,7 @@ func TestResolveWithWarmCache(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(writer, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	r := Resolver{logger: logger, Cache: make(Cache)}
 
-	for range 2{
+	for range 2 {
 		for _, test := range testCases {
 			t.Run(test, func(t *testing.T) {
 				q := NewQuestion(test, dns.TypeMX)
