@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -54,22 +55,38 @@ type Resolver struct {
 	mu     sync.RWMutex
 }
 
-func (r *Resolver) queryQ(q dns.Question, server string) *dns.Msg {
+const retries = 5
+var dataTruncatedErr = errors.New("Udp datagram truncated, retry with tcp")
+var serverNoRespErr = fmt.Errorf("Server didn't respond after %d retries ", retries)
+
+const udpNet = "udp"
+const tcpNet = "tcp"
+
+func (r *Resolver) queryQ(q dns.Question, server string, net string) (*dns.Msg, error) {
 	msg := new(dns.Msg)
 	c := new(dns.Client)
+	c.Net = net
+
 	msg.Question = append(msg.Question, q)
 	r.logger.Debug(q.String(), "To: ", server)
 
-	for range 5{
+	for range retries{
+		r.logger.Info(fmt.Sprintf("Doing %s query to %s with %s", net, server, q.Name))
 		resp, _, err := c.Exchange(msg, server+":53")
 
-		if err == nil{
-			return resp
-		} else {
+		if err != nil{
 			r.logger.Warn("Got err during dns query request: ", "err", err)
+			continue
 		}
+
+		if resp.Truncated{
+			return &dns.Msg{}, dataTruncatedErr
+		}
+
+		return resp, nil
 	}
-	return &dns.Msg{}
+
+	return &dns.Msg{}, serverNoRespErr
 }
 
 // NS_RR.Hdr.Name -- is actuall ownership of this refference
@@ -81,12 +98,12 @@ type NS_RR struct {
 type Zone = string
 type Cache map[Zone]map[string]NS_RR
 
-func (c Cache) getClosestZone(name string, match int) string {
+func (c Cache) getClosestZone(name string) string {
 	// www.apple.com
 	var clossestZone string
 
-	currMatch := match
-	for zone, _ := range c {
+	var currMatch int
+	for zone := range c {
 		m := dns.CompareDomainName(dns.CanonicalName(zone), dns.CanonicalName(name))
 		if dns.IsSubDomain(dns.CanonicalName(zone), dns.CanonicalName(name)) && m >= currMatch {
 			clossestZone = zone
@@ -132,10 +149,9 @@ func (r *Resolver) resolveQ(q dns.Question, depth int) ([]dns.RR, error) {
 	//             the zone being queried; this is used as a measure of how
 	//             "close" the resolver is to SNAME
 
-	// var visited map[string]bool
-	var match int
+	var visited = make(map[string]bool)
 	for range 20 {
-		zone := r.Cache.getClosestZone(q.Name, match)
+		zone := r.Cache.getClosestZone(q.Name)
 
 		if zone == "." {
 			r.Cache["."] = safeBelt
@@ -147,20 +163,28 @@ func (r *Resolver) resolveQ(q dns.Question, depth int) ([]dns.RR, error) {
 		r.mu.Unlock()
 
 		var serverIP net.IP
-		resolving := make(map[string]bool)
-		for serverIP == nil{
+		for _, server_RR := range servers {
+			if visited[server_RR.ip.String()] {
+				continue
+			}
+
+			if server_RR.ip != nil {
+				serverIP = server_RR.ip
+				break
+			}
+		}
+		if serverIP == nil{
 			for domainName, server_RR := range servers {
+				if visited[server_RR.ip.String()] {
+					continue
+				}
+
 				if server_RR.ip == nil {
-					r.mu.RLock()
-					if resolving[server_RR.Ns] {
-						continue
-					}
-					r.mu.RUnlock()
-					resolving[server_RR.Ns] = true
 					q := dns.Question{Name: server_RR.Ns, Qtype: dns.TypeA, Qclass: dns.ClassINET}
 					resp, err := r.resolveQ(q, depth+1)
 					if err != nil {
 						r.logger.Warn("Got err during resolve of NS: ", "err", err)
+						continue
 					}
 
 					for _, rr := range resp {
@@ -170,19 +194,34 @@ func (r *Resolver) resolveQ(q dns.Question, depth int) ([]dns.RR, error) {
 							servers[domainName] = s
 						}
 					}
-					delete(resolving, server_RR.Ns)
-				} else {
-					serverIP = server_RR.ip
-					break
-				}
+				} 
+
+				serverIP = server_RR.ip
+				break
 			}
 		}
+
+		if serverIP == nil{
+			return nil, notFoundErr
+		}
+
 		r.mu.Lock()
 		r.logger.Info("Resolved ", "server ip", serverIP, "depth", depth)
 		r.mu.Unlock()
 
-		resp := r.queryQ(q, serverIP.String())
-		// analyze response
+		resp, err := r.queryQ(q, serverIP.String(), udpNet)
+		visited[serverIP.String()] = true
+		r.logger.Info("Received after udp err ", "err", err)
+
+		if errors.Is(err, dataTruncatedErr) || errors.Is(err, serverNoRespErr){
+			resp, err = r.queryQ(q, serverIP.String(), tcpNet)
+
+			if err != nil{
+				// add to visited
+				continue
+			}
+		}
+
 
 		if len(resp.Answer) > 0 {
 			return resp.Answer, nil

@@ -86,7 +86,7 @@ func TestCacheMatching(t *testing.T) {
 		}
 
 		t.Run(Tcase.test, func(t *testing.T) {
-			resp := c.getClosestZone(Tcase.test, 0)
+			resp := c.getClosestZone(Tcase.test)
 			if resp != Tcase.want {
 				t.Fail()
 			}
@@ -124,6 +124,7 @@ func TestCNAMEResolvePath(t *testing.T) {
 			}
 		})
 	}
+	
 }
 
 func TestResolveWithWarmCache(t *testing.T) {
@@ -140,20 +141,22 @@ func TestResolveWithWarmCache(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(writer, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	r := Resolver{logger: logger, Cache: make(Cache)}
 
-	for _, test := range testCases {
-		t.Run(test, func(t *testing.T) {
-			q := NewQuestion(test, dns.TypeMX)
-			answ_rr, err := r.resolveQ(q, 0)
+	for range 2{
+		for _, test := range testCases {
+			t.Run(test, func(t *testing.T) {
+				q := NewQuestion(test, dns.TypeMX)
+				answ_rr, err := r.resolveQ(q, 0)
 
-			if err != nil {
-				t.Error("err during dns exchange: ", err.Error())
-			}
-			if len(answ_rr) == 0 {
-				t.Error("No domain name found")
-			}
-			for _, rr := range answ_rr {
-				t.Log(rr.String())
-			}
-		})
+				if err != nil {
+					t.Error("err during dns exchange: ", err.Error())
+				}
+				if len(answ_rr) == 0 {
+					t.Error("No domain name found")
+				}
+				for _, rr := range answ_rr {
+					t.Log(rr.String())
+				}
+			})
+		}
 	}
 }
