@@ -72,6 +72,7 @@ func (r *Resolver) queryQ(q dns.Question, server string, net string) (*dns.Msg, 
 
 	r.logger.Info(fmt.Sprintf("Doing %s query to %s with %s", net, server, q.Name))
 	if net == udpNet{
+		msg.SetEdns0(1232, false)
 		for range retries{
 			resp, _, err := c.Exchange(msg, server+":53")
 
