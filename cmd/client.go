@@ -2,13 +2,20 @@ package main
 
 import (
 	"log"
+	"os"
 
 	"github.com/miekg/dns"
 )
 
 func main() {
+	host := os.Getenv("CLIENT_BIND_HOST")
+
+	if len(host) == 0{
+		host = "127.0.0.1:5356"
+	}
+
 	m := new(dns.Msg)
-	serverAddr := "127.0.0.1:5356"
+	serverAddr := host
 
 	c := new(dns.Client)
 	c.Net = "udp"
@@ -23,7 +30,7 @@ func main() {
 	m = new(dns.Msg)
 	name := "blog.dnsimple.com"
 	m.SetQuestion(dns.Fqdn(name), dns.TypeA)
-	m.RecursionDesired = false
+	// m.RecursionDesired = false
 
 	d, _, err := c.Exchange(m, serverAddr)
 	if err != nil {
