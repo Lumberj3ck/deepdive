@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/tls"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net"
@@ -364,7 +366,7 @@ func main() {
 	// r.resolveQ(q, 0)
 	host := os.Getenv("BIND_HOST")
 
-	if len(host) == 0{
+	if len(host) == 0 {
 		host = "127.0.0.1:5356"
 	}
 
@@ -380,18 +382,35 @@ func main() {
 		}
 		wg <- struct{}{}
 	}()
+	slog.Info("Started udp servers at: ", "host", host)
 
-	tcpServer := dns.Server{Addr: host, Net: "tcp"}
+	tcpTlsServer := dns.Server{Addr: host, Net: "tcp-tls"}
 
-	go func() {
-		err := tcpServer.ListenAndServe()
+	var certFile string 
+	var privKeyFile string 
+	flag.StringVar(&certFile, "cert", "/etc/fullchain.pem", "")
+	flag.StringVar(&privKeyFile, "privkey", "/etc/privkey.pem", "")
+	flag.Parse()
 
-		if err != nil {
-			slog.Error(err.Error())
+	cert, err := tls.LoadX509KeyPair(certFile, privKeyFile)
+
+	if err == nil {
+		tcpTlsServer.TLSConfig = &tls.Config{
+			Certificates: []tls.Certificate{cert},
 		}
 
-		wg <- struct{}{}
-	}()
-	slog.Info("Started tcp and udp servers at: ", "host", host)
+		go func() {
+			err := tcpTlsServer.ListenAndServe()
+
+			if err != nil {
+				slog.Error(err.Error())
+			}
+
+			wg <- struct{}{}
+		}()
+		slog.Info("Started tcp tls servers at: ", "host", host)
+	} else {
+		slog.Info("Couldn't start tcp tls server: ", "err", err)
+	}
 	<-wg
 }
