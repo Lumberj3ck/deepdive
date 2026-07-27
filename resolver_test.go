@@ -129,7 +129,7 @@ func TestCNAMEResolvePath(t *testing.T) {
 
 func TestResolveWithWarmCache(t *testing.T) {
 	// testCases := []string{"blog.dnsimple.com", "www.github.com", "www.apple.com", "dns1.p01.nsone.net"}
-	testCases := []string{"google.com", "gisma.com", "vercel.com", "apple.com", "blog.dnsimple.com", "www.rfc-editor.org"}
+	testCases := []string{"google.com", "gisma.com", "vercel.com", "apple.com", "blog.dnsimple.com", "www.rfc-editor.org", "www.github.com"}
 	//, "gisma.com"}
 	v := os.Getenv("RESOLVY_LOGS")
 	var writer io.Writer

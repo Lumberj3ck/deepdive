@@ -103,8 +103,8 @@ type NS_RR struct {
 }
 
 func containsSoa(ns []dns.RR) bool {
-	for _, rr := range ns{
-		if _, ok := rr.(*dns.SOA); ok{
+	for _, rr := range ns {
+		if _, ok := rr.(*dns.SOA); ok {
 			return true
 		}
 	}
@@ -150,21 +150,7 @@ func (r *Resolver) resolveQ(q dns.Question, depth int) ([]dns.RR, error) {
 	//
 	//  what to use for cache
 	//  map[responsible_zone]dns.A
-	// a structure which describes the name servers and the
-	//             zone which the resolver is currently trying to query.
-	//             This structure keeps track of the resolver's current
-	//             best guess about which name servers hold the desired
-	//             information; it is updated when arriving information
-	//             changes the guess.  This structure includes the
-	//             equivalent of a zone name, the known name servers for
-	//             the zone, the known addresses for the name servers, and
-	//             history information which can be used to suggest which
-	//             server is likely to be the best one to try next.  The
-	//             zone name equivalent is a match count of the number of
-	//             labels from the root down which SNAME has in common with
-	//             the zone being queried; this is used as a measure of how
-	//             "close" the resolver is to SNAME
-
+	answer := make([]dns.RR, 0, 10)
 	var visited = make(map[string]bool)
 	for range 20 {
 		zone := r.Cache.getClosestZone(q.Name)
@@ -239,11 +225,31 @@ func (r *Resolver) resolveQ(q dns.Question, depth int) ([]dns.RR, error) {
 		}
 
 		if len(resp.Answer) > 0 {
-			return resp.Answer, nil
+			answer = append(answer, resp.Answer...)
+
+			if q.Qtype == dns.TypeA {
+				var cnameResolved bool
+				var cnameExists bool
+				for _, rr := range resp.Answer {
+					if rr.Header().Name == q.Name && rr.Header().Rrtype == dns.TypeA {
+						cnameResolved = true
+						break
+					}
+					if rr, ok := rr.(*dns.CNAME); ok {
+						cnameExists = true
+						q.Name = rr.Target
+						r.logger.Debug("Resolving CNAME " + q.Name)
+					}
+				}
+				if !cnameResolved && cnameExists {
+					continue
+				}
+			}
+			return answer, nil
 		}
 
 		// nodata, name exists, however not such RR type available
-		if resp.Rcode == dns.RcodeSuccess && len(resp.Answer) == 0 && resp.Authoritative && containsSoa(resp.Ns){
+		if resp.Rcode == dns.RcodeSuccess && len(resp.Answer) == 0 && resp.Authoritative && containsSoa(resp.Ns) {
 			return nil, nil
 		}
 
@@ -351,36 +357,41 @@ func main() {
 	// 	fmt.Println(strings.TrimSpace(rr.String()))
 	// }
 
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	q := dns.Question{Name: dns.Fqdn("m.gtld-servers.net."), Qtype: dns.TypeA, Qclass: dns.ClassINET}
-	r := Resolver{logger: logger, Cache: make(Cache)}
+	// logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	// q := dns.Question{Name: dns.Fqdn("m.gtld-servers.net."), Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	// r := Resolver{logger: logger, Cache: make(Cache)}
+	//
+	// r.resolveQ(q, 0)
+	host := os.Getenv("BIND_HOST")
 
-	r.resolveQ(q, 0)
+	if len(host) == 0{
+		host = "127.0.0.1:5356"
+	}
 
-	// udpServer := dns.Server{Addr: "127.0.0.1:5356", Net: "udp"}
-	// dns.HandleFunc(".", handleAll)
-	// var wg chan struct{}
-	//
-	// go func() {
-	// 	err := udpServer.ListenAndServe()
-	//
-	// 	if err != nil {
-	// 		slog.Error(err.Error())
-	// 	}
-	// 	wg <- struct{}{}
-	// }()
-	//
-	// tcpServer := dns.Server{Addr: "127.0.0.1:5356", Net: "tcp"}
-	//
-	// go func() {
-	// 	err := tcpServer.ListenAndServe()
-	//
-	// 	if err != nil {
-	// 		slog.Error(err.Error())
-	// 	}
-	//
-	// 	wg <- struct{}{}
-	// }()
-	// slog.Info("Started tcp and udp servers")
-	// <-wg
+	udpServer := dns.Server{Addr: host, Net: "udp"}
+	dns.HandleFunc(".", handleAll)
+	var wg chan struct{}
+
+	go func() {
+		err := udpServer.ListenAndServe()
+
+		if err != nil {
+			slog.Error(err.Error())
+		}
+		wg <- struct{}{}
+	}()
+
+	tcpServer := dns.Server{Addr: host, Net: "tcp"}
+
+	go func() {
+		err := tcpServer.ListenAndServe()
+
+		if err != nil {
+			slog.Error(err.Error())
+		}
+
+		wg <- struct{}{}
+	}()
+	slog.Info("Started tcp and udp servers at: ", "host", host)
+	<-wg
 }
