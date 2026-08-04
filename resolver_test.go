@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -96,7 +97,17 @@ func TestCacheMatching(t *testing.T) {
 
 func TestCNAMEResolvePath(t *testing.T) {
 	// testCases := []string{"blog.dnsimple.com", "www.github.com", "www.apple.com", "dns1.p01.nsone.net"}
-	testCases := []string{"google.com", "gisma.com", "vercel.com", "apple.com", "blog.dnsimple.com", "www.rfc-editor.org"}
+	testCases := []struct {
+		name    string
+		wantErr error
+	}{
+		{name: "google.com"},
+		{name: "gisma.com"},
+		{name: "vercel.com"},
+		{name: "apple.com"},
+		{name: "blog.dnsimple.com"},
+		{name: "www.rfc-editor.org", wantErr: ErrNoSuchRR},
+	}
 	//, "gisma.com"}
 	v := os.Getenv("RESOLVY_LOGS")
 	var writer io.Writer
@@ -108,13 +119,19 @@ func TestCNAMEResolvePath(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(writer, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	for _, test := range testCases {
-		t.Run(test, func(t *testing.T) {
+		t.Run(test.name, func(t *testing.T) {
 			r := Resolver{logger: logger, Cache: NewCache()}
-			q := NewQuestion(test, dns.TypeMX)
+			q := NewQuestion(test.name, dns.TypeMX)
 			answ_rr, err := r.resolveQ(q, 0)
 
+			if test.wantErr != nil {
+				if !errors.Is(err, test.wantErr) {
+					t.Fatalf("resolve error = %v, want %v", err, test.wantErr)
+				}
+				return
+			}
 			if err != nil {
-				t.Error("err during dns exchange: ", err.Error())
+				t.Fatal("err during dns exchange: ", err)
 			}
 			if len(answ_rr) == 0 {
 				t.Error("No domain name found")
@@ -129,7 +146,18 @@ func TestCNAMEResolvePath(t *testing.T) {
 
 func TestResolveWithWarmCache(t *testing.T) {
 	// testCases := []string{"blog.dnsimple.com", "www.github.com", "www.apple.com", "dns1.p01.nsone.net"}
-	testCases := []string{"google.com", "gisma.com", "vercel.com", "apple.com", "blog.dnsimple.com", "www.rfc-editor.org", "www.github.com"}
+	testCases := []struct {
+		name    string
+		wantErr error
+	}{
+		{name: "google.com"},
+		{name: "gisma.com"},
+		{name: "vercel.com"},
+		{name: "apple.com"},
+		{name: "blog.dnsimple.com"},
+		{name: "www.rfc-editor.org", wantErr: ErrNoSuchRR},
+		{name: "www.github.com"},
+	}
 	//, "gisma.com"}
 	v := os.Getenv("RESOLVY_LOGS")
 	var writer io.Writer
@@ -143,12 +171,18 @@ func TestResolveWithWarmCache(t *testing.T) {
 
 	for range 2 {
 		for _, test := range testCases {
-			t.Run(test, func(t *testing.T) {
-				q := NewQuestion(test, dns.TypeMX)
+			t.Run(test.name, func(t *testing.T) {
+				q := NewQuestion(test.name, dns.TypeMX)
 				answ_rr, err := r.resolveQ(q, 0)
 
+				if test.wantErr != nil {
+					if !errors.Is(err, test.wantErr) {
+						t.Fatalf("resolve error = %v, want %v", err, test.wantErr)
+					}
+					return
+				}
 				if err != nil {
-					t.Error("err during dns exchange: ", err.Error())
+					t.Fatal("err during dns exchange: ", err)
 				}
 				if len(answ_rr) == 0 {
 					t.Error("No domain name found")
