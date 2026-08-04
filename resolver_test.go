@@ -79,10 +79,10 @@ func TestCacheMatching(t *testing.T) {
 	}
 
 	for _, Tcase := range testCases {
-		c := make(Cache)
+		c := NewCache()
 
 		for _, zone := range Tcase.zones {
-			c[zone] = map[string]NS_RR{}
+			c.PushZoneEntry(zone, map[string]NS_RR{})
 		}
 
 		t.Run(Tcase.test, func(t *testing.T) {
@@ -109,7 +109,7 @@ func TestCNAMEResolvePath(t *testing.T) {
 
 	for _, test := range testCases {
 		t.Run(test, func(t *testing.T) {
-			r := Resolver{logger: logger, Cache: make(Cache)}
+			r := Resolver{logger: logger, Cache: NewCache()}
 			q := NewQuestion(test, dns.TypeMX)
 			answ_rr, err := r.resolveQ(q, 0)
 
@@ -139,7 +139,7 @@ func TestResolveWithWarmCache(t *testing.T) {
 		writer = os.Stdout
 	}
 	logger := slog.New(slog.NewTextHandler(writer, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	r := Resolver{logger: logger, Cache: make(Cache)}
+	r := Resolver{logger: logger, Cache: NewCache()}
 
 	for range 2 {
 		for _, test := range testCases {
