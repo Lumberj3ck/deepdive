@@ -4,8 +4,10 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
 )
@@ -92,6 +94,59 @@ func TestCacheMatching(t *testing.T) {
 				t.Fail()
 			}
 		})
+	}
+}
+
+func TestCacheReturnsZoneSnapshot(t *testing.T) {
+	cache := NewCache()
+	cache.PushRREntry("example.", "ns.example.", NS_RR{
+		NS: dns.NS{
+			Hdr: dns.RR_Header{Name: "example.", Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: 60},
+			Ns:  "ns.example.",
+		},
+	})
+
+	entries, ok := cache.GetZoneRR("example.")
+	if !ok {
+		t.Fatal("expected cached zone")
+	}
+	delete(entries, "ns.example.")
+
+	entries, ok = cache.GetZoneRR("example.")
+	if !ok || len(entries) != 1 {
+		t.Fatal("mutating returned entries changed the cache")
+	}
+}
+
+func TestCacheExpiresDelegationAndAddressSeparately(t *testing.T) {
+	now := time.Now().Unix()
+	cache := NewCache()
+	cache.PushRREntry("example.", "expired.example.", NS_RR{
+		ttlExpiresAt: now - 1,
+		NS: dns.NS{
+			Hdr: dns.RR_Header{Name: "example.", Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: 60},
+			Ns:  "expired.example.",
+		},
+	})
+	cache.PushRREntry("parent.", "ns.parent.", NS_RR{
+		ip:          net.ParseIP("192.0.2.1"),
+		ipExpiresAt: now - 1,
+		NS: dns.NS{
+			Hdr: dns.RR_Header{Name: "parent.", Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: 60},
+			Ns:  "ns.parent.",
+		},
+	})
+
+	if _, ok := cache.GetZoneRR("example."); ok {
+		t.Fatal("expired delegation remained cached")
+	}
+
+	rr, ok := cache.GetNsRR("parent.", "ns.parent.")
+	if !ok {
+		t.Fatal("valid delegation was removed with its expired address")
+	}
+	if rr.ip != nil {
+		t.Fatal("expired nameserver address remained cached")
 	}
 }
 

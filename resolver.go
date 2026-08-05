@@ -100,9 +100,15 @@ func (r *Resolver) queryQ(q dns.Question, server string, net string) (*dns.Msg, 
 
 // NS_RR.Hdr.Name -- is actuall ownership of this refference
 type NS_RR struct {
-	ip net.IP
-	Ttl_timestamp int64
+	ip           net.IP
+	ttlExpiresAt int64
+	ipExpiresAt  int64
 	dns.NS
+}
+
+func cloneNSRR(rr NS_RR) NS_RR {
+	rr.ip = append(net.IP(nil), rr.ip...)
+	return rr
 }
 
 func containsSoa(ns []dns.RR) bool {
@@ -117,47 +123,72 @@ func containsSoa(ns []dns.RR) bool {
 type Zone = string
 type Cache struct {
 	store map[Zone]map[string]NS_RR
-	mu     sync.RWMutex
+	mu    sync.RWMutex
 }
 
 func NewCache() *Cache {
 	return &Cache{
 		store: make(map[Zone]map[string]NS_RR),
-		mu: sync.RWMutex{},
+		mu:    sync.RWMutex{},
 	}
 }
 
-func (c *Cache) PushZoneEntry(zone string, ns_names map[string]NS_RR){
-	c.mu.Lock()
-	c.store[zone] = ns_names
-	c.mu.Unlock()
-}
-
-func (c *Cache) PushRREntry(zone string, ns_name string, ns_rr NS_RR){
+func (c *Cache) PushZoneEntry(zone string, ns_names map[string]NS_RR) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, ok := c.store[zone]
 
-	if !ok {
+	entries := make(map[string]NS_RR, len(ns_names))
+	for name, rr := range ns_names {
+		entries[name] = cloneNSRR(rr)
+	}
+	c.store[zone] = entries
+}
+
+func (c *Cache) PushRREntry(zone string, ns_name string, ns_rr NS_RR) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if _, ok := c.store[zone]; !ok {
 		c.store[zone] = map[string]NS_RR{}
 	}
 
-	ns_rr.Ttl_timestamp = time.Now().Unix() + int64(ns_rr.Hdr.Ttl)
-	c.store[zone][ns_name] = ns_rr
-
+	now := time.Now().Unix()
+	if ns_rr.ttlExpiresAt == 0 && ns_rr.Hdr.Ttl > 0 {
+		ns_rr.ttlExpiresAt = now + int64(ns_rr.Hdr.Ttl)
+	}
+	if ns_rr.ip != nil && ns_rr.ipExpiresAt == 0 && ns_rr.Hdr.Ttl > 0 {
+		ns_rr.ipExpiresAt = now + int64(ns_rr.Hdr.Ttl)
+	}
+	c.store[zone][ns_name] = cloneNSRR(ns_rr)
 }
 
-func (c *Cache) GetZoneRR(zone string) (map[string]NS_RR, bool){
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+func (c *Cache) GetZoneRR(zone string) (map[string]NS_RR, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	z, ok := c.store[zone]
-	return z, ok
+	if !ok {
+		return nil, false
+	}
+
+	c.removeExpiredLocked(zone, time.Now().Unix())
+	z, ok = c.store[zone]
+	if !ok {
+		return nil, false
+	}
+
+	entries := make(map[string]NS_RR, len(z))
+	for name, rr := range z {
+		entries[name] = cloneNSRR(rr)
+	}
+	return entries, true
 }
 
-func (c *Cache) GetNsRR(zone string, ns_name string) (NS_RR, bool){
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+func (c *Cache) GetNsRR(zone string, ns_name string) (NS_RR, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.removeExpiredLocked(zone, time.Now().Unix())
 
 	z, ok := c.store[zone]
 	if !ok {
@@ -165,36 +196,58 @@ func (c *Cache) GetNsRR(zone string, ns_name string) (NS_RR, bool){
 	}
 
 	nsrr, ok := z[ns_name]
-	return nsrr, ok
+	return cloneNSRR(nsrr), ok
 }
 
 func (c *Cache) CleanEntry(zone string, ns_name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	if _, ok := c.store[zone]; !ok {
-		return fmt.Errorf("Zone to clean doesn't exists")
+		return fmt.Errorf("zone to clean doesn't exist")
 	}
 
-	c.mu.Lock()
 	delete(c.store[zone], ns_name)
-	c.mu.Unlock()
+	if len(c.store[zone]) == 0 {
+		delete(c.store, zone)
+	}
 	return nil
 }
 
-func (c *Cache) updateNsRR(zone string, ns_name string, updated NS_RR) {
-	if _, ok := c.store[zone]; !ok {
-		c.store[zone] = map[string]NS_RR{}
+func (c *Cache) updateNsAddress(zone string, ns_name string, ip net.IP, ttl uint32) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	entries, ok := c.store[zone]
+	if !ok {
+		return false
 	}
-	
-	t := time.Now()
-	updated.Hdr.Ttl = uint32(t.Unix()) + updated.Hdr.Ttl
-	c.store[zone][ns_name] = updated
+
+	rr, ok := entries[ns_name]
+	if !ok {
+		return false
+	}
+
+	rr.ip = append(net.IP(nil), ip...)
+	rr.ipExpiresAt = time.Now().Unix() + int64(ttl)
+	entries[ns_name] = rr
+	return true
 }
 
 func (c *Cache) getClosestZone(name string) string {
-	// www.apple.com
-	var clossestZone string
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
+	var clossestZone string
 	var currMatch int
+	now := time.Now().Unix()
+
 	for zone := range c.store {
+		c.removeExpiredLocked(zone, now)
+		if _, ok := c.store[zone]; !ok {
+			continue
+		}
+
 		m := dns.CompareDomainName(dns.CanonicalName(zone), dns.CanonicalName(name))
 		if dns.IsSubDomain(dns.CanonicalName(zone), dns.CanonicalName(name)) && m >= currMatch {
 			clossestZone = zone
@@ -208,6 +261,31 @@ func (c *Cache) getClosestZone(name string) string {
 	return clossestZone
 }
 
+func (c *Cache) removeExpiredLocked(zone string, now int64) {
+	entries, ok := c.store[zone]
+	if !ok {
+		return
+	}
+
+	hadEntries := len(entries) > 0
+	for name, rr := range entries {
+		if rr.ttlExpiresAt != 0 && rr.ttlExpiresAt <= now {
+			delete(entries, name)
+			continue
+		}
+
+		if rr.ip != nil && rr.ipExpiresAt != 0 && rr.ipExpiresAt <= now {
+			rr.ip = nil
+			rr.ipExpiresAt = 0
+			entries[name] = rr
+		}
+	}
+
+	if hadEntries && len(entries) == 0 {
+		delete(c.store, zone)
+	}
+}
+
 type Delegation struct {
 	servers []NS_RR
 }
@@ -217,11 +295,11 @@ func newDelegation(servers []NS_RR) *Delegation {
 		servers: servers,
 	}
 }
+
 var ErrNoKnownNsEndpoint = fmt.Errorf("No, known ns endpoints available.")
 var ErrNoNsRefferences = fmt.Errorf("All Ns refferences visited")
 var ErrServerNotReachable = fmt.Errorf("Server not reachable")
 var ErrNoSuchRR = fmt.Errorf("No given rr available for domain")
-
 
 func (r *Resolver) GetNextServer(zone string, servers map[string]NS_RR, visited map[string]bool) (net.IP, string, error) {
 	var serverIP net.IP
@@ -230,12 +308,6 @@ func (r *Resolver) GetNextServer(zone string, servers map[string]NS_RR, visited 
 		if visited[domainName] {
 			continue
 		}
-		if server_RR.Ttl_timestamp < time.Now().Unix() && server_RR.Ttl_timestamp != 0{
-			r.logger.Info("Outdated cache entry")
-			r.Cache.CleanEntry(zone, domainName)
-			continue		
-		}
-
 		if server_RR.ip != nil {
 			serverIP = server_RR.ip
 			nsDomainName = domainName
@@ -285,7 +357,6 @@ func (r *Resolver) handleRefferences(q dns.Question) (*dns.Msg, error) {
 	zone := r.Cache.getClosestZone(q.Name)
 
 	if zone == "." {
-		// r.Cache["."] = safeBelt
 		r.Cache.PushZoneEntry(".", safeBelt)
 	}
 
@@ -297,14 +368,14 @@ func (r *Resolver) handleRefferences(q dns.Question) (*dns.Msg, error) {
 		// it will try to resolve one, if can't it will try to resolve next
 		serverIP, nsReff, err := r.GetNextServer(zone, servers, visited)
 
-		if err == ErrNoNsRefferences{
+		if err == ErrNoNsRefferences {
 			return nil, fmt.Errorf("Failed to resolve NS refferences")
 		}
 
-		if err == ErrNoKnownNsEndpoint{
+		if err == ErrNoKnownNsEndpoint {
 			// or AAAA
 			resp, err := r.resolveQ(dns.Question{Name: nsReff, Qtype: dns.TypeA, Qclass: dns.ClassINET}, 0)
-			if err != nil{
+			if err != nil {
 				r.logger.Warn("Got err during resolve of NS: ", "err", err)
 				visited[nsReff] = true
 				continue
@@ -314,12 +385,11 @@ func (r *Resolver) handleRefferences(q dns.Question) (*dns.Msg, error) {
 				// or AAAA
 				if rr, ok := rr.(*dns.A); ok {
 					s := servers[nsReff]
-					s.ip = rr.A
-					s.Hdr.Ttl = rr.Hdr.Ttl
+					s.ip = append(net.IP(nil), rr.A...)
+					s.ipExpiresAt = time.Now().Unix() + int64(rr.Hdr.Ttl)
 
 					servers[nsReff] = s
-					// r.Cache[zone] = servers
-					r.Cache.updateNsRR(zone, nsReff, s)
+					r.Cache.updateNsAddress(zone, nsReff, rr.A, rr.Hdr.Ttl)
 				}
 			}
 			serverIP = servers[nsReff].ip
@@ -369,7 +439,11 @@ func (r *Resolver) handleRefferences(q dns.Question) (*dns.Msg, error) {
 					}
 
 					if rr.Ns == extr.Header().Name {
-						gluedRefferences[rr.Ns] = NS_RR{NS: *rr, ip: extra_rr.A}
+						gluedRefferences[rr.Ns] = NS_RR{
+							NS:          *rr,
+							ip:          append(net.IP(nil), extra_rr.A...),
+							ipExpiresAt: time.Now().Unix() + int64(extra_rr.Hdr.Ttl),
+						}
 					}
 				}
 			}
@@ -381,9 +455,9 @@ func (r *Resolver) handleRefferences(q dns.Question) (*dns.Msg, error) {
 				if !ok {
 					continue
 				}
-				
+
 				cachedNsRR, rr_exists := r.Cache.GetNsRR(rr.Header().Name, rr.Ns)
-				if rr_exists && cachedNsRR.ip != nil{
+				if rr_exists && cachedNsRR.ip != nil {
 					continue
 				}
 
@@ -401,7 +475,6 @@ func (r *Resolver) handleRefferences(q dns.Question) (*dns.Msg, error) {
 		zone = r.Cache.getClosestZone(q.Name)
 		servers, _ = r.Cache.GetZoneRR(zone)
 	}
-
 
 	// handle refferences.
 	// 		check if further refference
@@ -469,13 +542,12 @@ func (r *Resolver) resolveQ(q dns.Question, depth int) ([]dns.RR, error) {
 	return nil, notFoundErr
 }
 
-func handleAll(w dns.ResponseWriter, m *dns.Msg) {
+func (r *Resolver) handleAll(w dns.ResponseWriter, m *dns.Msg) {
 	msg := new(dns.Msg)
 	msg.SetReply(m)
-	resolver := Resolver{slog.Default(), NewCache()}
 
 	for _, q := range m.Question {
-		rr, err := resolver.resolveQ(q, 0)
+		rr, err := r.resolveQ(q, 0)
 		if err != nil {
 			// write err as dns err
 			slog.Error("Got err during resolve: ", "err", err)
@@ -530,7 +602,8 @@ func main() {
 	}
 
 	udpServer := dns.Server{Addr: host, Net: "udp"}
-	dns.HandleFunc(".", handleAll)
+	resolver := &Resolver{logger: slog.Default(), Cache: NewCache()}
+	dns.HandleFunc(".", resolver.handleAll)
 	var wg chan struct{}
 
 	go func() {
