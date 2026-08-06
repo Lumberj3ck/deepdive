@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -53,8 +55,9 @@ var safeBelt = map[string]NS_RR{
 var notFoundErr = fmt.Errorf("Couldn't find any answers for given query")
 
 type Resolver struct {
-	logger *slog.Logger
-	Cache  *Cache
+	logger  *slog.Logger
+	Cache   *Cache
+	History *RequestHistory
 }
 
 const (
@@ -80,7 +83,9 @@ func (r *Resolver) queryQ(q dns.Question, server string, net string) (*dns.Msg, 
 	if net == udpNet {
 		msg.SetEdns0(1232, false)
 		for range retries {
+			started := time.Now()
 			resp, _, err := c.Exchange(msg, server+":53")
+			r.recordRequest("upstream", net, server, q, responseResult(resp, err), time.Since(started))
 
 			if err != nil {
 				r.logger.Warn("Got err during dns query request: ", "err", err)
@@ -94,11 +99,44 @@ func (r *Resolver) queryQ(q dns.Question, server string, net string) (*dns.Msg, 
 			return resp, nil
 		}
 	} else {
+		started := time.Now()
 		resp, _, err := c.Exchange(msg, server+":53")
+		r.recordRequest("upstream", net, server, q, responseResult(resp, err), time.Since(started))
 		return resp, err
 	}
 
 	return &dns.Msg{}, serverNoRespErr
+}
+
+func (r *Resolver) recordRequest(direction, network, peer string, q dns.Question, result string, duration time.Duration) {
+	qtype := dns.TypeToString[q.Qtype]
+	if qtype == "" {
+		qtype = strconv.Itoa(int(q.Qtype))
+	}
+	r.History.Add(RequestEvent{
+		At:        time.Now(),
+		Direction: direction,
+		Network:   network,
+		Peer:      peer,
+		Name:      q.Name,
+		QType:     qtype,
+		Result:    result,
+		Duration:  duration,
+	})
+}
+
+func responseResult(resp *dns.Msg, err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	if resp == nil {
+		return "empty response"
+	}
+	result := dns.RcodeToString[resp.Rcode]
+	if resp.Truncated {
+		result += " (truncated)"
+	}
+	return result
 }
 
 // NS_RR.Hdr.Name -- is actuall ownership of this refference
@@ -544,7 +582,13 @@ func (r *Resolver) handleAll(w dns.ResponseWriter, m *dns.Msg) {
 	msg.SetReply(m)
 
 	for _, q := range m.Question {
+		started := time.Now()
 		rr, err := r.resolveQ(q, 0)
+		result := "NOERROR"
+		if err != nil {
+			result = err.Error()
+		}
+		r.recordRequest("client", w.RemoteAddr().Network(), w.RemoteAddr().String(), q, result, time.Since(started))
 		if err != nil {
 			// write err as dns err
 			slog.Error("Got err during resolve: ", "err", err)
@@ -599,9 +643,36 @@ func main() {
 	}
 
 	udpServer := dns.Server{Addr: host, Net: "udp"}
-	resolver := &Resolver{logger: slog.Default(), Cache: NewCache()}
+	history := NewRequestHistory(500)
+	resolver := &Resolver{logger: slog.Default(), Cache: NewCache(), History: history}
 	dns.HandleFunc(".", resolver.handleAll)
 	var wg chan struct{}
+
+	adminPassword := os.Getenv("ADMIN_PASSWORD")
+	if adminPassword == "" {
+		slog.Info("Admin dashboard disabled; set ADMIN_PASSWORD to enable it")
+	} else {
+		adminUser := os.Getenv("ADMIN_USER")
+		if adminUser == "" {
+			adminUser = "admin"
+		}
+		adminHost := os.Getenv("ADMIN_HOST")
+		if adminHost == "" {
+			adminHost = "127.0.0.1:8080"
+		}
+
+		adminServer := &http.Server{
+			Addr:              adminHost,
+			Handler:           newAdminHandler(history, adminUser, adminPassword),
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+		go func() {
+			if err := adminServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("Admin dashboard failed", "err", err)
+			}
+		}()
+		slog.Info("Started admin dashboard", "host", adminHost, "user", adminUser)
+	}
 
 	go func() {
 		err := udpServer.ListenAndServe()
