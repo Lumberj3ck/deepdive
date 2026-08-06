@@ -57,7 +57,10 @@ type Resolver struct {
 	Cache  *Cache
 }
 
-const retries = 2
+const (
+	retries               = 2
+	maxReferralIterations = 64
+)
 
 var dataTruncatedErr = errors.New("Udp datagram truncated, retry with tcp")
 var serverNoRespErr = fmt.Errorf("Server didn't respond after %d retries ", retries)
@@ -300,6 +303,7 @@ var ErrNoKnownNsEndpoint = fmt.Errorf("No, known ns endpoints available.")
 var ErrNoNsRefferences = fmt.Errorf("All Ns refferences visited")
 var ErrServerNotReachable = fmt.Errorf("Server not reachable")
 var ErrNoSuchRR = fmt.Errorf("No given rr available for domain")
+var ErrReferralLimitExceeded = fmt.Errorf("referral iteration limit exceeded")
 
 func (r *Resolver) GetNextServer(zone string, servers map[string]NS_RR, visited map[string]bool) (net.IP, string, error) {
 	var serverIP net.IP
@@ -364,7 +368,7 @@ func (r *Resolver) handleRefferences(q dns.Question) (*dns.Msg, error) {
 	r.logger.Info("Got closest zone: ", "zone", zone)
 	servers, _ := r.Cache.GetZoneRR(zone)
 
-	for {
+	for range maxReferralIterations {
 		// it will try to resolve one, if can't it will try to resolve next
 		serverIP, nsReff, err := r.GetNextServer(zone, servers, visited)
 
@@ -476,14 +480,7 @@ func (r *Resolver) handleRefferences(q dns.Question) (*dns.Msg, error) {
 		servers, _ = r.Cache.GetZoneRR(zone)
 	}
 
-	// handle refferences.
-	// 		check if further refference
-	//      add cache
-	//      if no cache, handle refferences till the end.
-	//  	analyze answer from the resolve refferences func
-	//  	if cname retry
-	// analyze
-
+	return nil, ErrReferralLimitExceeded
 }
 
 func (r *Resolver) resolveQ(q dns.Question, depth int) ([]dns.RR, error) {
