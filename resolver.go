@@ -55,9 +55,10 @@ var safeBelt = map[string]NS_RR{
 var notFoundErr = fmt.Errorf("Couldn't find any answers for given query")
 
 type Resolver struct {
-	logger  *slog.Logger
-	Cache   *Cache
-	History *RequestHistory
+	logger       *slog.Logger
+	Cache        *Cache
+	History      *RequestHistory
+	DomainPolicy *DomainPolicy
 }
 
 const (
@@ -583,6 +584,11 @@ func (r *Resolver) handleAll(w dns.ResponseWriter, m *dns.Msg) {
 
 	for _, q := range m.Question {
 		started := time.Now()
+		if !r.isDomainAllowed(q.Name) {
+			msg.Rcode = dns.RcodeRefused
+			r.recordRequest("client", w.RemoteAddr().Network(), w.RemoteAddr().String(), q, dns.RcodeToString[dns.RcodeRefused], time.Since(started))
+			break
+		}
 		rr, err := r.resolveQ(q, 0)
 		result := "NOERROR"
 		if err != nil {
@@ -620,6 +626,10 @@ func (r *Resolver) handleAll(w dns.ResponseWriter, m *dns.Msg) {
 	}
 }
 
+func (r *Resolver) isDomainAllowed(domain string) bool {
+	return r.DomainPolicy == nil || r.DomainPolicy.IsAllowed(domain)
+}
+
 func main() {
 	// name := "www.example.com"
 	// answers, err := resolve(name, dns.TypeAAAA)
@@ -636,6 +646,12 @@ func main() {
 	// r := Resolver{logger: logger, Cache: make(Cache)}
 	//
 	// r.resolveQ(q, 0)
+	var certFile string
+	var privKeyFile string
+	flag.StringVar(&certFile, "cert", "/etc/fullchain.pem", "TLS certificate chain")
+	flag.StringVar(&privKeyFile, "privkey", "/etc/privkey.pem", "TLS private key")
+	flag.Parse()
+
 	host := os.Getenv("BIND_HOST")
 
 	if len(host) == 0 {
@@ -644,7 +660,12 @@ func main() {
 
 	udpServer := dns.Server{Addr: host, Net: "udp"}
 	history := NewRequestHistory(500)
-	resolver := &Resolver{logger: slog.Default(), Cache: NewCache(), History: history}
+	policy, err := NewDomainPolicy(os.Getenv("POLICY_FILE"))
+	if err != nil {
+		slog.Error("Failed to load domain policies", "err", err)
+		os.Exit(1)
+	}
+	resolver := &Resolver{logger: slog.Default(), Cache: NewCache(), History: history, DomainPolicy: policy}
 	dns.HandleFunc(".", resolver.handleAll)
 	var wg chan struct{}
 
@@ -674,6 +695,23 @@ func main() {
 		slog.Info("Started admin dashboard", "host", adminHost, "user", adminUser)
 	}
 
+	policyToken := os.Getenv("POLICY_TOKEN")
+	if policyToken == "" {
+		slog.Info("Policy API disabled; set POLICY_TOKEN to enable it")
+	} else {
+		policyHost := os.Getenv("POLICY_HOST")
+		if policyHost == "" {
+			policyHost = "127.0.0.1:8443"
+		}
+		policyServer := newPolicyServer(policyHost, policy, policyToken)
+		go func() {
+			if err := policyServer.ListenAndServeTLS(certFile, privKeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("Policy API failed", "err", err)
+			}
+		}()
+		slog.Info("Started policy API", "host", policyHost)
+	}
+
 	go func() {
 		err := udpServer.ListenAndServe()
 
@@ -685,12 +723,6 @@ func main() {
 	slog.Info("Started udp servers at: ", "host", host)
 
 	tcpTlsServer := dns.Server{Addr: host, Net: "tcp-tls"}
-
-	var certFile string
-	var privKeyFile string
-	flag.StringVar(&certFile, "cert", "/etc/fullchain.pem", "")
-	flag.StringVar(&privKeyFile, "privkey", "/etc/privkey.pem", "")
-	flag.Parse()
 
 	cert, err := tls.LoadX509KeyPair(certFile, privKeyFile)
 
