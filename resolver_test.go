@@ -37,9 +37,9 @@ func TestSetResolutionError(t *testing.T) {
 			Minttl: 300,
 		}
 		msg := new(dns.Msg)
-		result, terminal := setResolutionError(msg, &nameError{authority: []dns.RR{soa}})
-		if result != "NXDOMAIN" || !terminal || msg.Rcode != dns.RcodeNameError {
-			t.Fatalf("result = %q, terminal = %t, rcode = %d", result, terminal, msg.Rcode)
+		result := setResolutionError(msg, &nameError{authority: []dns.RR{soa}})
+		if result != "NXDOMAIN" || msg.Rcode != dns.RcodeNameError {
+			t.Fatalf("result = %q, rcode = %d", result, msg.Rcode)
 		}
 		if len(msg.Ns) != 1 || msg.Ns[0] != soa {
 			t.Fatalf("authority records = %#v, want upstream SOA", msg.Ns)
@@ -48,17 +48,17 @@ func TestSetResolutionError(t *testing.T) {
 
 	t.Run("resolver failure becomes SERVFAIL", func(t *testing.T) {
 		msg := new(dns.Msg)
-		result, terminal := setResolutionError(msg, ErrServerNotReachable)
-		if result != "SERVFAIL" || !terminal || msg.Rcode != dns.RcodeServerFailure {
-			t.Fatalf("result = %q, terminal = %t, rcode = %d", result, terminal, msg.Rcode)
+		result := setResolutionError(msg, ErrServerNotReachable)
+		if result != "SERVFAIL" || msg.Rcode != dns.RcodeServerFailure {
+			t.Fatalf("result = %q, rcode = %d", result, msg.Rcode)
 		}
 	})
 
 	t.Run("missing record type remains NOERROR", func(t *testing.T) {
 		msg := new(dns.Msg)
-		result, terminal := setResolutionError(msg, ErrNoSuchRR)
-		if result != "NOERROR" || terminal || msg.Rcode != dns.RcodeSuccess {
-			t.Fatalf("result = %q, terminal = %t, rcode = %d", result, terminal, msg.Rcode)
+		result := setResolutionError(msg, ErrNoSuchRR)
+		if result != "NOERROR" || msg.Rcode != dns.RcodeSuccess {
+			t.Fatalf("result = %q, rcode = %d", result, msg.Rcode)
 		}
 	})
 }

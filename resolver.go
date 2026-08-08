@@ -565,7 +565,10 @@ func (r *Resolver) handleAll(w dns.ResponseWriter, m *dns.Msg) {
 	msg := new(dns.Msg)
 	msg.SetReply(m)
 
-	for _, q := range m.Question {
+	if len(m.Question) != 1 {
+		msg.Rcode = dns.RcodeFormatError
+	} else {
+		q := m.Question[0]
 		started := time.Now()
 		if !r.isDomainAllowed(q.Name) {
 			msg.Rcode = dns.RcodeNameError
@@ -580,22 +583,16 @@ func (r *Resolver) handleAll(w dns.ResponseWriter, m *dns.Msg) {
 				Minttl:  blockedResponseTTL,
 			})
 			r.recordRequest("client", w.RemoteAddr().Network(), w.RemoteAddr().String(), q, dns.RcodeToString[dns.RcodeNameError], time.Since(started))
-			break
-		}
-		rr, err := r.resolveQ(q, 0)
-		result, terminal := setResolutionError(msg, err)
-		r.recordRequest("client", w.RemoteAddr().Network(), w.RemoteAddr().String(), q, result, time.Since(started))
-		if err != nil {
-			slog.Error("Got err during resolve: ", "err", err)
-			if terminal {
-				break
+		} else {
+			rr, err := r.resolveQ(q, 0)
+			result := setResolutionError(msg, err)
+			r.recordRequest("client", w.RemoteAddr().Network(), w.RemoteAddr().String(), q, result, time.Since(started))
+			if err != nil {
+				slog.Error("Got err during resolve: ", "err", err)
 			}
-			continue
-		}
 
-		if len(rr) > 0 {
-			for _, r := range rr {
-				msg.Answer = append(msg.Answer, r)
+			if err == nil {
+				msg.Answer = append(msg.Answer, rr...)
 			}
 		}
 	}
@@ -614,9 +611,9 @@ func (r *Resolver) handleAll(w dns.ResponseWriter, m *dns.Msg) {
 	}
 }
 
-func setResolutionError(msg *dns.Msg, err error) (string, bool) {
+func setResolutionError(msg *dns.Msg, err error) string {
 	if err == nil || errors.Is(err, ErrNoSuchRR) {
-		return dns.RcodeToString[dns.RcodeSuccess], false
+		return dns.RcodeToString[dns.RcodeSuccess]
 	}
 	if errors.Is(err, ErrNameError) {
 		msg.Rcode = dns.RcodeNameError
@@ -624,10 +621,10 @@ func setResolutionError(msg *dns.Msg, err error) (string, bool) {
 		if errors.As(err, &negative) {
 			msg.Ns = append(msg.Ns, negative.authority...)
 		}
-		return dns.RcodeToString[dns.RcodeNameError], true
+		return dns.RcodeToString[dns.RcodeNameError]
 	}
 	msg.Rcode = dns.RcodeServerFailure
-	return dns.RcodeToString[dns.RcodeServerFailure], true
+	return dns.RcodeToString[dns.RcodeServerFailure]
 }
 
 func (r *Resolver) isDomainAllowed(domain string) bool {
