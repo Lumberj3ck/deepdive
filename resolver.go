@@ -64,6 +64,7 @@ type Resolver struct {
 const (
 	retries               = 2
 	maxReferralIterations = 64
+	maxResolveDepth       = 16
 	blockedResponseTTL    = 60
 )
 
@@ -169,6 +170,12 @@ type Cache struct {
 	mu    sync.RWMutex
 }
 
+func canonicalDNSName(name string) (string, bool) {
+	name = dns.CanonicalName(name)
+	_, valid := dns.IsDomainName(name)
+	return name, valid
+}
+
 func NewCache() *Cache {
 	return &Cache{
 		store: make(map[Zone]map[string]NS_RR),
@@ -177,17 +184,40 @@ func NewCache() *Cache {
 }
 
 func (c *Cache) PushZoneEntry(zone string, ns_names map[string]NS_RR) {
+	zone, valid := canonicalDNSName(zone)
+	if !valid {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	entries := make(map[string]NS_RR, len(ns_names))
 	for name, rr := range ns_names {
+		name, valid = canonicalDNSName(name)
+		if !valid {
+			continue
+		}
+		rr.Hdr.Name = zone
+		rr.Ns, valid = canonicalDNSName(rr.Ns)
+		if !valid {
+			continue
+		}
 		entries[name] = cloneNSRR(rr)
 	}
 	c.store[zone] = entries
 }
 
 func (c *Cache) PushRREntry(zone string, ns_name string, ns_rr NS_RR) {
+	zone, valid := canonicalDNSName(zone)
+	if !valid {
+		return
+	}
+	ns_name, valid = canonicalDNSName(ns_name)
+	if !valid {
+		return
+	}
+	ns_rr.Hdr.Name = zone
+	ns_rr.Ns = ns_name
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -206,6 +236,7 @@ func (c *Cache) PushRREntry(zone string, ns_name string, ns_rr NS_RR) {
 }
 
 func (c *Cache) GetZoneRR(zone string) (map[string]NS_RR, bool) {
+	zone = dns.CanonicalName(zone)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -228,6 +259,8 @@ func (c *Cache) GetZoneRR(zone string) (map[string]NS_RR, bool) {
 }
 
 func (c *Cache) GetNsRR(zone string, ns_name string) (NS_RR, bool) {
+	zone = dns.CanonicalName(zone)
+	ns_name = dns.CanonicalName(ns_name)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -243,6 +276,8 @@ func (c *Cache) GetNsRR(zone string, ns_name string) (NS_RR, bool) {
 }
 
 func (c *Cache) CleanEntry(zone string, ns_name string) error {
+	zone = dns.CanonicalName(zone)
+	ns_name = dns.CanonicalName(ns_name)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -257,7 +292,26 @@ func (c *Cache) CleanEntry(zone string, ns_name string) error {
 	return nil
 }
 
+func (c *Cache) removeZoneIfNoEndpoints(zone string) bool {
+	zone = dns.CanonicalName(zone)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entries, exists := c.store[zone]
+	if !exists {
+		return true
+	}
+	for _, rr := range entries {
+		if rr.ip != nil {
+			return false
+		}
+	}
+	delete(c.store, zone)
+	return true
+}
+
 func (c *Cache) updateNsAddress(zone string, ns_name string, ip net.IP, ttl uint32) bool {
+	zone = dns.CanonicalName(zone)
+	ns_name = dns.CanonicalName(ns_name)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -278,6 +332,10 @@ func (c *Cache) updateNsAddress(zone string, ns_name string, ip net.IP, ttl uint
 }
 
 func (c *Cache) getClosestZone(name string) string {
+	name, valid := canonicalDNSName(name)
+	if !valid {
+		return "."
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -291,8 +349,8 @@ func (c *Cache) getClosestZone(name string) string {
 			continue
 		}
 
-		m := dns.CompareDomainName(dns.CanonicalName(zone), dns.CanonicalName(name))
-		if dns.IsSubDomain(dns.CanonicalName(zone), dns.CanonicalName(name)) && m >= currMatch {
+		m := dns.CompareDomainName(zone, name)
+		if dns.IsSubDomain(zone, name) && m >= currMatch {
 			clossestZone = zone
 			currMatch = m
 		}
@@ -342,21 +400,8 @@ func newDelegation(servers []NS_RR) *Delegation {
 var ErrNoKnownNsEndpoint = fmt.Errorf("No, known ns endpoints available.")
 var ErrNoNsRefferences = fmt.Errorf("All Ns refferences visited")
 var ErrServerNotReachable = fmt.Errorf("Server not reachable")
-var ErrNoSuchRR = fmt.Errorf("No given rr available for domain")
-var ErrNameError = fmt.Errorf("Domain does not exist")
 var ErrReferralLimitExceeded = fmt.Errorf("referral iteration limit exceeded")
-
-type nameError struct {
-	authority []dns.RR
-}
-
-func (e *nameError) Error() string {
-	return ErrNameError.Error()
-}
-
-func (e *nameError) Unwrap() error {
-	return ErrNameError
-}
+var ErrResolveDepthExceeded = fmt.Errorf("resolution depth limit exceeded")
 
 func (r *Resolver) GetNextServer(zone string, servers map[string]NS_RR, visited map[string]bool) (net.IP, string, error) {
 	var serverIP net.IP
@@ -403,7 +448,7 @@ func (r *Resolver) queryQWithRetry(q dns.Question, serverIP string) (*dns.Msg, e
 	return resp, err
 }
 
-func (r *Resolver) handleRefferences(q dns.Question) (*dns.Msg, error) {
+func (r *Resolver) handleRefferences(q dns.Question, depth int) (*dns.Msg, error) {
 	zone := r.Cache.getClosestZone(q.Name)
 
 	if zone == "." {
@@ -411,7 +456,7 @@ func (r *Resolver) handleRefferences(q dns.Question) (*dns.Msg, error) {
 	}
 
 	var visited = make(map[string]bool)
-	r.logger.Info("Got closest zone: ", "zone", zone)
+	r.logger.Debug("Got closest zone", "zone", zone)
 	servers, _ := r.Cache.GetZoneRR(zone)
 
 	for range maxReferralIterations {
@@ -423,15 +468,24 @@ func (r *Resolver) handleRefferences(q dns.Question) (*dns.Msg, error) {
 		}
 
 		if err == ErrNoKnownNsEndpoint {
+			// against circular nsreff, happens when cache expires and resolver is inside of
+			// inbailiwick zone, get rid of zone cache and get glue again from parent
+			if dns.IsSubDomain(dns.CanonicalName(zone), dns.CanonicalName(nsReff)) {
+				if !r.Cache.removeZoneIfNoEndpoints(zone) {
+					visited[nsReff] = true
+					servers, _ = r.Cache.GetZoneRR(zone)
+					continue
+				}
+			}
 			// or AAAA
-			resp, err := r.resolveQ(dns.Question{Name: nsReff, Qtype: dns.TypeA, Qclass: dns.ClassINET}, 0)
+			resp, err := r.resolveQ(dns.Question{Name: nsReff, Qtype: dns.TypeA, Qclass: dns.ClassINET}, depth+1)
 			if err != nil {
 				r.logger.Warn("Got err during resolve of NS: ", "err", err)
 				visited[nsReff] = true
 				continue
 			}
 
-			for _, rr := range resp {
+			for _, rr := range resp.Answer {
 				// or AAAA
 				if rr, ok := rr.(*dns.A); ok {
 					s := servers[nsReff]
@@ -443,6 +497,11 @@ func (r *Resolver) handleRefferences(q dns.Question) (*dns.Msg, error) {
 				}
 			}
 			serverIP = servers[nsReff].ip
+			// if receive CNAME without final answer or AAAA which is not supported yet.
+			if serverIP == nil {
+				visited[nsReff] = true
+				continue
+			}
 		}
 
 		visited[nsReff] = true
@@ -453,17 +512,17 @@ func (r *Resolver) handleRefferences(q dns.Question) (*dns.Msg, error) {
 			continue
 		}
 		if resp.Rcode == dns.RcodeNameError {
-			return nil, &nameError{authority: append([]dns.RR(nil), resp.Ns...)}
+			return resp, nil
 		}
 
 		if len(resp.Answer) > 0 {
-			r.logger.Info("Found resp answer", "resp", resp)
+			r.logger.Debug("Found response answer", "resp", resp)
 			return resp, nil
 		}
 
 		// nodata, name exists, however not such RR type available
 		if resp.Rcode == dns.RcodeSuccess && len(resp.Answer) == 0 && resp.Authoritative && containsSoa(resp.Ns) {
-			return nil, ErrNoSuchRR
+			return resp, nil
 		}
 
 		gluedRefferences := map[string]NS_RR{}
@@ -475,15 +534,21 @@ func (r *Resolver) handleRefferences(q dns.Question) (*dns.Msg, error) {
 					continue
 				}
 
+				extraName := dns.CanonicalName(extr.Header().Name)
 				for _, rr := range resp.Ns {
 					rr, ok := rr.(*dns.NS)
 					if !ok {
 						continue
 					}
 
-					if rr.Ns == extr.Header().Name {
-						gluedRefferences[rr.Ns] = NS_RR{
-							NS:          *rr,
+					nsName := dns.CanonicalName(rr.Ns)
+					zoneName := dns.CanonicalName(rr.Hdr.Name)
+					if nsName == extraName {
+						ns := *rr
+						ns.Hdr.Name = zoneName
+						ns.Ns = nsName
+						gluedRefferences[nsName] = NS_RR{
+							NS:          ns,
 							ip:          append(net.IP(nil), extra_rr.A...),
 							ipExpiresAt: time.Now().Unix() + int64(extra_rr.Hdr.Ttl),
 						}
@@ -499,63 +564,92 @@ func (r *Resolver) handleRefferences(q dns.Question) (*dns.Msg, error) {
 					continue
 				}
 
-				cachedNsRR, rr_exists := r.Cache.GetNsRR(rr.Header().Name, rr.Ns)
+				zoneName := dns.CanonicalName(rr.Header().Name)
+				nsName := dns.CanonicalName(rr.Ns)
+				cachedNsRR, rr_exists := r.Cache.GetNsRR(zoneName, nsName)
 				if rr_exists && cachedNsRR.ip != nil {
 					continue
 				}
 
 				var nsRR NS_RR
-				if _, ok := gluedRefferences[rr.Ns]; ok {
-					nsRR = gluedRefferences[rr.Ns]
+				if _, ok := gluedRefferences[nsName]; ok {
+					nsRR = gluedRefferences[nsName]
 				} else {
-					nsRR = NS_RR{NS: *rr}
+					ns := *rr
+					ns.Hdr.Name = zoneName
+					ns.Ns = nsName
+					nsRR = NS_RR{NS: ns}
 				}
 
-				r.Cache.PushRREntry(rr.Header().Name, rr.Ns, nsRR)
+				r.Cache.PushRREntry(zoneName, nsName, nsRR)
 			}
 		}
 
-		zone = r.Cache.getClosestZone(q.Name)
+		nextZone := r.Cache.getClosestZone(q.Name)
+		// the same ns server might be responsible for two different zones.
+		// ask for sub.example.com from .com
+		// receive ns1.net
+		// ask sub.example.com  from ns1.net
+		// receive ns1.net
+		// can't receive answer because ns1.net is in visited. (Defence against broken dns configuration)
+		if nextZone != zone {
+			visited = make(map[string]bool)
+		}
+		zone = nextZone
 		servers, _ = r.Cache.GetZoneRR(zone)
 	}
 
 	return nil, ErrReferralLimitExceeded
 }
 
-func (r *Resolver) resolveQ(q dns.Question, depth int) ([]dns.RR, error) {
+func (r *Resolver) resolveQ(q dns.Question, depth int) (*dns.Msg, error) {
+	if depth >= maxResolveDepth {
+		return nil, ErrResolveDepthExceeded
+	}
+
 	answer := make([]dns.RR, 0, 10)
+	visitedAliases := make(map[string]bool)
 	for range 20 {
-		resp, err := r.handleRefferences(q)
+		resp, err := r.handleRefferences(q, depth)
 
 		if err != nil {
 			return nil, err
 		}
-		r.logger.Info("Handled reff ", "resp", resp)
+		r.logger.Debug("Referral resolution completed", "resp", resp)
+		// went for cname resolution, had negative rcode gotta copy at least what we have already resolved
+		if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) == 0 {
+			resp.Answer = append(answer, resp.Answer...)
+			return resp, nil
+		}
 
 		//analyze results
-		if len(resp.Answer) > 0 {
-			answer = append(answer, resp.Answer...)
+		answer = append(answer, resp.Answer...)
 
-			if q.Qtype == dns.TypeA {
-				var cnameResolved bool
-				var cnameExists bool
-				for _, rr := range resp.Answer {
-					if rr.Header().Name == q.Name && rr.Header().Rrtype == dns.TypeA {
-						cnameResolved = true
-						break
-					}
-					if rr, ok := rr.(*dns.CNAME); ok {
-						cnameExists = true
-						q.Name = rr.Target
-						r.logger.Debug("Resolving CNAME " + q.Name)
-					}
-				}
-				if !cnameResolved && cnameExists {
-					continue
-				}
-			}
-			return answer, nil
+		if q.Qtype == dns.TypeCNAME {
+			return resp, nil
 		}
+
+		var cnameTarget string
+		for _, rr := range resp.Answer {
+			if rr.Header().Rrtype == q.Qtype {
+				resp.Answer = answer
+				return resp, nil
+			}
+			if cname, ok := rr.(*dns.CNAME); ok && dns.CanonicalName(cname.Hdr.Name) == dns.CanonicalName(q.Name) {
+				cnameTarget = dns.CanonicalName(cname.Target)
+			}
+		}
+		if cnameTarget != "" {
+			if visitedAliases[cnameTarget] {
+				return nil, notFoundErr
+			}
+			visitedAliases[cnameTarget] = true
+			q.Name = cnameTarget
+			r.logger.Debug("Resolving CNAME", "target", q.Name)
+			continue
+		}
+		resp.Answer = answer
+		return resp, nil
 	}
 
 	return nil, notFoundErr
@@ -584,16 +678,23 @@ func (r *Resolver) handleAll(w dns.ResponseWriter, m *dns.Msg) {
 			})
 			r.recordRequest("client", w.RemoteAddr().Network(), w.RemoteAddr().String(), q, dns.RcodeToString[dns.RcodeNameError], time.Since(started))
 		} else {
-			rr, err := r.resolveQ(q, 0)
-			result := setResolutionError(msg, err)
-			r.recordRequest("client", w.RemoteAddr().Network(), w.RemoteAddr().String(), q, result, time.Since(started))
+			resp, err := r.resolveQ(q, 0)
+			result := dns.RcodeToString[dns.RcodeServerFailure]
 			if err != nil {
+				msg.Rcode = dns.RcodeServerFailure
 				slog.Error("Got err during resolve: ", "err", err)
+			} else {
+				msg.Rcode = resp.Rcode
+				msg.Answer = append(msg.Answer, resp.Answer...)
+				msg.Ns = append(msg.Ns, resp.Ns...)
+				for _, rr := range resp.Extra {
+					if rr.Header().Rrtype != dns.TypeOPT {
+						msg.Extra = append(msg.Extra, rr)
+					}
+				}
+				result = dns.RcodeToString[resp.Rcode]
 			}
-
-			if err == nil {
-				msg.Answer = append(msg.Answer, rr...)
-			}
+			r.recordRequest("client", w.RemoteAddr().Network(), w.RemoteAddr().String(), q, result, time.Since(started))
 		}
 	}
 
@@ -609,22 +710,6 @@ func (r *Resolver) handleAll(w dns.ResponseWriter, m *dns.Msg) {
 	if err := w.WriteMsg(msg); err != nil {
 		slog.Error("WriteMsg failed: ", "err: ", err)
 	}
-}
-
-func setResolutionError(msg *dns.Msg, err error) string {
-	if err == nil || errors.Is(err, ErrNoSuchRR) {
-		return dns.RcodeToString[dns.RcodeSuccess]
-	}
-	if errors.Is(err, ErrNameError) {
-		msg.Rcode = dns.RcodeNameError
-		var negative *nameError
-		if errors.As(err, &negative) {
-			msg.Ns = append(msg.Ns, negative.authority...)
-		}
-		return dns.RcodeToString[dns.RcodeNameError]
-	}
-	msg.Rcode = dns.RcodeServerFailure
-	return dns.RcodeToString[dns.RcodeServerFailure]
 }
 
 func (r *Resolver) isDomainAllowed(domain string) bool {

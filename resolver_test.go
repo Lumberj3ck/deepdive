@@ -28,41 +28,6 @@ func NewClient() *dns.Client {
 	return c
 }
 
-func TestSetResolutionError(t *testing.T) {
-	t.Run("NXDOMAIN preserves authority", func(t *testing.T) {
-		soa := &dns.SOA{
-			Hdr:    dns.RR_Header{Name: ".", Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 300},
-			Ns:     "a.root-servers.net.",
-			Mbox:   "nstld.verisign-grs.com.",
-			Minttl: 300,
-		}
-		msg := new(dns.Msg)
-		result := setResolutionError(msg, &nameError{authority: []dns.RR{soa}})
-		if result != "NXDOMAIN" || msg.Rcode != dns.RcodeNameError {
-			t.Fatalf("result = %q, rcode = %d", result, msg.Rcode)
-		}
-		if len(msg.Ns) != 1 || msg.Ns[0] != soa {
-			t.Fatalf("authority records = %#v, want upstream SOA", msg.Ns)
-		}
-	})
-
-	t.Run("resolver failure becomes SERVFAIL", func(t *testing.T) {
-		msg := new(dns.Msg)
-		result := setResolutionError(msg, ErrServerNotReachable)
-		if result != "SERVFAIL" || msg.Rcode != dns.RcodeServerFailure {
-			t.Fatalf("result = %q, rcode = %d", result, msg.Rcode)
-		}
-	})
-
-	t.Run("missing record type remains NOERROR", func(t *testing.T) {
-		msg := new(dns.Msg)
-		result := setResolutionError(msg, ErrNoSuchRR)
-		if result != "NOERROR" || msg.Rcode != dns.RcodeSuccess {
-			t.Fatalf("result = %q, rcode = %d", result, msg.Rcode)
-		}
-	})
-}
-
 func TestCacheMatching(t *testing.T) {
 	testCases := []struct {
 		test  string
@@ -132,6 +97,28 @@ func TestCacheMatching(t *testing.T) {
 	}
 }
 
+func TestCacheRejectsMalformedZone(t *testing.T) {
+	cache := NewCache()
+	cache.PushRREntry("gpm.byteoversea.net..", "ns.gpm.byteoversea.net.", NS_RR{
+		NS: dns.NS{
+			Hdr: dns.RR_Header{Name: "gpm.byteoversea.net..", Rrtype: dns.TypeNS, Class: dns.ClassINET},
+			Ns:  "ns.gpm.byteoversea.net.",
+		},
+	})
+
+	if _, ok := cache.GetZoneRR("gpm.byteoversea.net.."); ok {
+		t.Fatal("malformed zone was cached")
+	}
+}
+
+func TestResolutionDepthLimit(t *testing.T) {
+	resolver := &Resolver{}
+	_, err := resolver.resolveQ(NewQuestion("example.com", dns.TypeA), maxResolveDepth)
+	if !errors.Is(err, ErrResolveDepthExceeded) {
+		t.Fatalf("resolve error = %v, want depth limit", err)
+	}
+}
+
 func TestCacheReturnsZoneSnapshot(t *testing.T) {
 	cache := NewCache()
 	cache.PushRREntry("example.", "ns.example.", NS_RR{
@@ -187,15 +174,15 @@ func TestCacheExpiresDelegationAndAddressSeparately(t *testing.T) {
 
 func TestCNAMEResolvePath(t *testing.T) {
 	testCases := []struct {
-		name    string
-		wantErr error
+		name      string
+		wantEmpty bool
 	}{
 		{name: "google.com"},
 		{name: "gisma.com"},
 		{name: "vercel.com"},
 		{name: "apple.com"},
 		{name: "blog.dnsimple.com"},
-		{name: "www.rfc-editor.org", wantErr: ErrNoSuchRR},
+		{name: "www.rfc-editor.org", wantEmpty: true},
 	}
 	v := os.Getenv("RESOLVY_LOGS")
 	var writer io.Writer
@@ -210,21 +197,17 @@ func TestCNAMEResolvePath(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			r := Resolver{logger: logger, Cache: NewCache()}
 			q := NewQuestion(test.name, dns.TypeMX)
-			answ_rr, err := r.resolveQ(q, 0)
-
-			if test.wantErr != nil {
-				if !errors.Is(err, test.wantErr) {
-					t.Fatalf("resolve error = %v, want %v", err, test.wantErr)
-				}
-				return
-			}
+			resp, err := r.resolveQ(q, 0)
 			if err != nil {
 				t.Fatal("err during dns exchange: ", err)
 			}
-			if len(answ_rr) == 0 {
+			if resp.Rcode != dns.RcodeSuccess {
+				t.Fatalf("rcode = %s, want NOERROR", dns.RcodeToString[resp.Rcode])
+			}
+			if !test.wantEmpty && len(resp.Answer) == 0 {
 				t.Error("No domain name found")
 			}
-			for _, rr := range answ_rr {
+			for _, rr := range resp.Answer {
 				t.Log(rr.String())
 			}
 		})
@@ -234,15 +217,15 @@ func TestCNAMEResolvePath(t *testing.T) {
 
 func TestResolveWithWarmCache(t *testing.T) {
 	testCases := []struct {
-		name    string
-		wantErr error
+		name      string
+		wantEmpty bool
 	}{
 		{name: "google.com"},
 		{name: "gisma.com"},
 		{name: "vercel.com"},
 		{name: "apple.com"},
 		{name: "blog.dnsimple.com"},
-		{name: "www.rfc-editor.org", wantErr: ErrNoSuchRR},
+		{name: "www.rfc-editor.org", wantEmpty: true},
 		{name: "www.github.com"},
 	}
 	v := os.Getenv("RESOLVY_LOGS")
@@ -259,21 +242,17 @@ func TestResolveWithWarmCache(t *testing.T) {
 		for _, test := range testCases {
 			t.Run(test.name, func(t *testing.T) {
 				q := NewQuestion(test.name, dns.TypeMX)
-				answ_rr, err := r.resolveQ(q, 0)
-
-				if test.wantErr != nil {
-					if !errors.Is(err, test.wantErr) {
-						t.Fatalf("resolve error = %v, want %v", err, test.wantErr)
-					}
-					return
-				}
+				resp, err := r.resolveQ(q, 0)
 				if err != nil {
 					t.Fatal("err during dns exchange: ", err)
 				}
-				if len(answ_rr) == 0 {
+				if resp.Rcode != dns.RcodeSuccess {
+					t.Fatalf("rcode = %s, want NOERROR", dns.RcodeToString[resp.Rcode])
+				}
+				if !test.wantEmpty && len(resp.Answer) == 0 {
 					t.Error("No domain name found")
 				}
-				for _, rr := range answ_rr {
+				for _, rr := range resp.Answer {
 					t.Log(rr.String())
 				}
 			})
