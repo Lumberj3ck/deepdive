@@ -19,7 +19,7 @@ func main() {
 
 	m := new(dns.Msg)
 	serverAddr := host
-	log.Println("BIND",host)
+	log.Println("BIND", host)
 
 	c := new(dns.Client)
 	if len(tcpTls) > 0 {

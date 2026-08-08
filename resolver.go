@@ -383,13 +383,6 @@ func (r *Resolver) GetNextServer(zone string, servers map[string]NS_RR, visited 
 
 		if server_RR.ip == nil {
 			return nil, server_RR.Ns, ErrNoKnownNsEndpoint
-			// q := dns.Question{Name: server_RR.Ns, Qtype: dns.TypeA, Qclass: dns.ClassINET}
-			// resp, err := r.resolveQ(q, depth+1)
-			// if err != nil {
-			// 	r.logger.Warn("Got err during resolve of NS: ", "err", err)
-			// 	continue
-			// }
-			//
 		}
 	}
 	return nil, "", ErrNoNsRefferences
@@ -463,16 +456,6 @@ func (r *Resolver) handleRefferences(q dns.Question) (*dns.Msg, error) {
 			return nil, &nameError{authority: append([]dns.RR(nil), resp.Ns...)}
 		}
 
-		// switch resp {
-		// case answer:
-		// 	return
-		// case refference:
-		// 	// check reff brings us clother?
-		// 	r.Cache.add(resp)
-		// 	r.Cache.getClosestZone(q.Name)
-		// 	delegation := newDelegation(resp)
-		// }
-
 		if len(resp.Answer) > 0 {
 			r.logger.Info("Found resp answer", "resp", resp)
 			return resp, nil
@@ -540,28 +523,11 @@ func (r *Resolver) handleRefferences(q dns.Question) (*dns.Msg, error) {
 }
 
 func (r *Resolver) resolveQ(q dns.Question, depth int) ([]dns.RR, error) {
-	// loop
-	// s := get_the_closest_server(q.Name)
-	// s - is_available? -> no -> resolve in gorutine
-	//   |
-	//  ask s about q.Name
-	//        |
-	//      response
-	//        |
-	//    do we have answer?  -> yes, return, if CNAME and qtype A change SNAME -- to CNAME
-	//     /     \
-	//    /       \
-	//  ns ref     glue
-	//  cache       find cache and add type.A IP
-	//
-	//  what to use for cache
-	//  map[responsible_zone]dns.A
 	answer := make([]dns.RR, 0, 10)
 	for range 20 {
 		resp, err := r.handleRefferences(q)
 
 		if err != nil {
-			// handle
 			return nil, err
 		}
 		r.logger.Info("Handled reff ", "resp", resp)
@@ -643,10 +609,6 @@ func (r *Resolver) handleAll(w dns.ResponseWriter, m *dns.Msg) {
 
 		msg.Truncate(size)
 	}
-	// fmt.Println("sent ", len(msg.Answer))
-	// fmt.Println(msg.Truncated)
-	// fmt.Println(msg.Compress)
-
 	if err := w.WriteMsg(msg); err != nil {
 		slog.Error("WriteMsg failed: ", "err: ", err)
 	}
@@ -673,21 +635,6 @@ func (r *Resolver) isDomainAllowed(domain string) bool {
 }
 
 func main() {
-	// name := "www.example.com"
-	// answers, err := resolve(name, dns.TypeAAAA)
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
-	//
-	// for _, rr := range answers {
-	// 	fmt.Println(strings.TrimSpace(rr.String()))
-	// }
-
-	// logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	// q := dns.Question{Name: dns.Fqdn("m.gtld-servers.net."), Qtype: dns.TypeA, Qclass: dns.ClassINET}
-	// r := Resolver{logger: logger, Cache: make(Cache)}
-	//
-	// r.resolveQ(q, 0)
 	var certFile string
 	var privKeyFile string
 	flag.StringVar(&certFile, "cert", "/etc/fullchain.pem", "TLS certificate chain")

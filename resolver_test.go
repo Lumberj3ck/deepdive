@@ -186,7 +186,6 @@ func TestCacheExpiresDelegationAndAddressSeparately(t *testing.T) {
 }
 
 func TestCNAMEResolvePath(t *testing.T) {
-	// testCases := []string{"blog.dnsimple.com", "www.github.com", "www.apple.com", "dns1.p01.nsone.net"}
 	testCases := []struct {
 		name    string
 		wantErr error
@@ -198,7 +197,6 @@ func TestCNAMEResolvePath(t *testing.T) {
 		{name: "blog.dnsimple.com"},
 		{name: "www.rfc-editor.org", wantErr: ErrNoSuchRR},
 	}
-	//, "gisma.com"}
 	v := os.Getenv("RESOLVY_LOGS")
 	var writer io.Writer
 	if v == "" {
@@ -235,7 +233,6 @@ func TestCNAMEResolvePath(t *testing.T) {
 }
 
 func TestResolveWithWarmCache(t *testing.T) {
-	// testCases := []string{"blog.dnsimple.com", "www.github.com", "www.apple.com", "dns1.p01.nsone.net"}
 	testCases := []struct {
 		name    string
 		wantErr error
@@ -248,7 +245,6 @@ func TestResolveWithWarmCache(t *testing.T) {
 		{name: "www.rfc-editor.org", wantErr: ErrNoSuchRR},
 		{name: "www.github.com"},
 	}
-	//, "gisma.com"}
 	v := os.Getenv("RESOLVY_LOGS")
 	var writer io.Writer
 	if v == "" {
