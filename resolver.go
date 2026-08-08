@@ -64,6 +64,7 @@ type Resolver struct {
 const (
 	retries               = 2
 	maxReferralIterations = 64
+	blockedResponseTTL    = 60
 )
 
 var dataTruncatedErr = errors.New("Udp datagram truncated, retry with tcp")
@@ -342,7 +343,20 @@ var ErrNoKnownNsEndpoint = fmt.Errorf("No, known ns endpoints available.")
 var ErrNoNsRefferences = fmt.Errorf("All Ns refferences visited")
 var ErrServerNotReachable = fmt.Errorf("Server not reachable")
 var ErrNoSuchRR = fmt.Errorf("No given rr available for domain")
+var ErrNameError = fmt.Errorf("Domain does not exist")
 var ErrReferralLimitExceeded = fmt.Errorf("referral iteration limit exceeded")
+
+type nameError struct {
+	authority []dns.RR
+}
+
+func (e *nameError) Error() string {
+	return ErrNameError.Error()
+}
+
+func (e *nameError) Unwrap() error {
+	return ErrNameError
+}
 
 func (r *Resolver) GetNextServer(zone string, servers map[string]NS_RR, visited map[string]bool) (net.IP, string, error) {
 	var serverIP net.IP
@@ -444,6 +458,9 @@ func (r *Resolver) handleRefferences(q dns.Question) (*dns.Msg, error) {
 		if err != nil {
 			r.logger.Info("Skipping server, because of the err", "serverIP", serverIP)
 			continue
+		}
+		if resp.Rcode == dns.RcodeNameError {
+			return nil, &nameError{authority: append([]dns.RR(nil), resp.Ns...)}
 		}
 
 		// switch resp {
@@ -585,20 +602,29 @@ func (r *Resolver) handleAll(w dns.ResponseWriter, m *dns.Msg) {
 	for _, q := range m.Question {
 		started := time.Now()
 		if !r.isDomainAllowed(q.Name) {
-			msg.Rcode = dns.RcodeRefused
-			r.recordRequest("client", w.RemoteAddr().Network(), w.RemoteAddr().String(), q, dns.RcodeToString[dns.RcodeRefused], time.Since(started))
+			msg.Rcode = dns.RcodeNameError
+			msg.Ns = append(msg.Ns, &dns.SOA{
+				Hdr:     dns.RR_Header{Name: q.Name, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: blockedResponseTTL},
+				Ns:      "ns.resolvy.invalid.",
+				Mbox:    "hostmaster.resolvy.invalid.",
+				Serial:  1,
+				Refresh: 3600,
+				Retry:   600,
+				Expire:  86400,
+				Minttl:  blockedResponseTTL,
+			})
+			r.recordRequest("client", w.RemoteAddr().Network(), w.RemoteAddr().String(), q, dns.RcodeToString[dns.RcodeNameError], time.Since(started))
 			break
 		}
 		rr, err := r.resolveQ(q, 0)
-		result := "NOERROR"
-		if err != nil {
-			result = err.Error()
-		}
+		result, terminal := setResolutionError(msg, err)
 		r.recordRequest("client", w.RemoteAddr().Network(), w.RemoteAddr().String(), q, result, time.Since(started))
 		if err != nil {
-			// write err as dns err
 			slog.Error("Got err during resolve: ", "err", err)
-			return
+			if terminal {
+				break
+			}
+			continue
 		}
 
 		if len(rr) > 0 {
@@ -624,6 +650,22 @@ func (r *Resolver) handleAll(w dns.ResponseWriter, m *dns.Msg) {
 	if err := w.WriteMsg(msg); err != nil {
 		slog.Error("WriteMsg failed: ", "err: ", err)
 	}
+}
+
+func setResolutionError(msg *dns.Msg, err error) (string, bool) {
+	if err == nil || errors.Is(err, ErrNoSuchRR) {
+		return dns.RcodeToString[dns.RcodeSuccess], false
+	}
+	if errors.Is(err, ErrNameError) {
+		msg.Rcode = dns.RcodeNameError
+		var negative *nameError
+		if errors.As(err, &negative) {
+			msg.Ns = append(msg.Ns, negative.authority...)
+		}
+		return dns.RcodeToString[dns.RcodeNameError], true
+	}
+	msg.Rcode = dns.RcodeServerFailure
+	return dns.RcodeToString[dns.RcodeServerFailure], true
 }
 
 func (r *Resolver) isDomainAllowed(domain string) bool {

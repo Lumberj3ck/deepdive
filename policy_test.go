@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -17,7 +18,7 @@ func TestDomainPolicyBlocksDomainAndSubdomains(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := policy.Replace([]string{"Example.COM.", "example.com"}); err != nil {
+	if _, err := policy.Replace([]string{"Example.COM.", "example.com"}, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -45,7 +46,7 @@ func TestDomainPolicyPersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := policy.Replace([]string{"blocked.example"}); err != nil {
+	if _, err := policy.Replace([]string{"blocked.example"}, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -80,7 +81,7 @@ func TestPolicyHandlerReplacesAndReadsBlocklist(t *testing.T) {
 	policy, _ := NewDomainPolicy("")
 	handler := newPolicyHandler(policy, "secret")
 
-	put := httptest.NewRequest(http.MethodPut, policyAPIPath, strings.NewReader(`{"blocked_domains":["B.example.","a.example"]}`))
+	put := httptest.NewRequest(http.MethodPut, policyAPIPath, strings.NewReader(`{"revision":0,"blocked_domains":["B.example.","a.example"]}`))
 	put.Header.Set("Authorization", "Bearer secret")
 	putResponse := httptest.NewRecorder()
 	handler.ServeHTTP(putResponse, put)
@@ -104,9 +105,24 @@ func TestPolicyHandlerReplacesAndReadsBlocklist(t *testing.T) {
 	}
 }
 
-func TestResolverRefusesBlockedDomain(t *testing.T) {
+func TestPolicyHandlerRejectsStaleRevision(t *testing.T) {
 	policy, _ := NewDomainPolicy("")
-	if _, err := policy.Replace([]string{"blocked.example"}); err != nil {
+	handler := newPolicyHandler(policy, "secret")
+
+	for requestNumber, wantStatus := range []int{http.StatusOK, http.StatusConflict} {
+		request := httptest.NewRequest(http.MethodPut, policyAPIPath, strings.NewReader(`{"revision":0,"blocked_domains":["blocked.example"]}`))
+		request.Header.Set("Authorization", "Bearer secret")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != wantStatus {
+			t.Fatalf("PUT %d status = %d, want %d", requestNumber+1, response.Code, wantStatus)
+		}
+	}
+}
+
+func TestResolverReturnsCacheableNXDOMAINForBlockedDomain(t *testing.T) {
+	policy, _ := NewDomainPolicy("")
+	if _, err := policy.Replace([]string{"blocked.example"}, 0); err != nil {
 		t.Fatal(err)
 	}
 	resolver := &Resolver{History: NewRequestHistory(10), DomainPolicy: policy}
@@ -121,11 +137,34 @@ func TestResolverRefusesBlockedDomain(t *testing.T) {
 	if writer.message == nil {
 		t.Fatal("resolver did not write a DNS response")
 	}
-	if writer.message.Rcode != dns.RcodeRefused {
-		t.Fatalf("rcode = %s, want REFUSED", dns.RcodeToString[writer.message.Rcode])
+	if writer.message.Rcode != dns.RcodeNameError {
+		t.Fatalf("rcode = %s, want NXDOMAIN", dns.RcodeToString[writer.message.Rcode])
 	}
-	if events := resolver.History.Snapshot(); len(events) != 1 || events[0].Result != "REFUSED" {
+	if len(writer.message.Ns) != 1 {
+		t.Fatalf("authority records = %d, want 1", len(writer.message.Ns))
+	}
+	soa, ok := writer.message.Ns[0].(*dns.SOA)
+	if !ok {
+		t.Fatalf("authority record = %T, want SOA", writer.message.Ns[0])
+	}
+	if soa.Hdr.Ttl != blockedResponseTTL || soa.Minttl != blockedResponseTTL {
+		t.Fatalf("negative cache TTL = (%d, %d), want %d", soa.Hdr.Ttl, soa.Minttl, blockedResponseTTL)
+	}
+	if events := resolver.History.Snapshot(); len(events) != 1 || events[0].Result != "NXDOMAIN" {
 		t.Fatalf("unexpected request history: %#v", events)
+	}
+}
+
+func TestDomainPolicyRejectsStaleRevision(t *testing.T) {
+	policy, _ := NewDomainPolicy("")
+	if _, err := policy.Replace([]string{"first.example"}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := policy.Replace([]string{"stale.example"}, 0); !errors.Is(err, errPolicyRevisionConflict) {
+		t.Fatalf("replace error = %v, want revision conflict", err)
+	}
+	if policy.IsAllowed("first.example") {
+		t.Fatal("stale replacement changed the active policy")
 	}
 }
 

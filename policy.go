@@ -20,6 +20,8 @@ import (
 
 const policyAPIPath = "/api/v1/policies/domains"
 
+var errPolicyRevisionConflict = errors.New("policy revision conflict")
+
 type policyDocument struct {
 	Revision       uint64   `json:"revision"`
 	BlockedDomains []string `json:"blocked_domains"`
@@ -92,7 +94,7 @@ func (p *DomainPolicy) Snapshot() policyDocument {
 	return policyDocument{Revision: p.revision, BlockedDomains: domains}
 }
 
-func (p *DomainPolicy) Replace(domains []string) (policyDocument, error) {
+func (p *DomainPolicy) Replace(domains []string, expectedRevision uint64) (policyDocument, error) {
 	normalized, err := normalizedDomains(domains)
 	if err != nil {
 		return policyDocument{}, err
@@ -100,6 +102,9 @@ func (p *DomainPolicy) Replace(domains []string) (policyDocument, error) {
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.revision != expectedRevision {
+		return policyDocument{}, errPolicyRevisionConflict
+	}
 
 	next := policyDocument{Revision: p.revision + 1, BlockedDomains: normalized}
 	if p.filePath != "" {
@@ -197,6 +202,7 @@ func newPolicyHandler(policy *DomainPolicy, token string) http.Handler {
 			decoder := json.NewDecoder(req.Body)
 			decoder.DisallowUnknownFields()
 			var update struct {
+				Revision       *uint64  `json:"revision"`
 				BlockedDomains []string `json:"blocked_domains"`
 			}
 			if err := decoder.Decode(&update); err != nil {
@@ -211,7 +217,15 @@ func newPolicyHandler(policy *DomainPolicy, token string) http.Handler {
 				writePolicyError(w, http.StatusBadRequest, err.Error())
 				return
 			}
-			document, err := policy.Replace(update.BlockedDomains)
+			if update.Revision == nil {
+				writePolicyError(w, http.StatusBadRequest, "revision is required")
+				return
+			}
+			document, err := policy.Replace(update.BlockedDomains, *update.Revision)
+			if errors.Is(err, errPolicyRevisionConflict) {
+				writePolicyError(w, http.StatusConflict, err.Error())
+				return
+			}
 			if err != nil {
 				writePolicyError(w, http.StatusInternalServerError, "failed to save policies")
 				return

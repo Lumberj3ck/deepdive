@@ -28,6 +28,41 @@ func NewClient() *dns.Client {
 	return c
 }
 
+func TestSetResolutionError(t *testing.T) {
+	t.Run("NXDOMAIN preserves authority", func(t *testing.T) {
+		soa := &dns.SOA{
+			Hdr:    dns.RR_Header{Name: ".", Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 300},
+			Ns:     "a.root-servers.net.",
+			Mbox:   "nstld.verisign-grs.com.",
+			Minttl: 300,
+		}
+		msg := new(dns.Msg)
+		result, terminal := setResolutionError(msg, &nameError{authority: []dns.RR{soa}})
+		if result != "NXDOMAIN" || !terminal || msg.Rcode != dns.RcodeNameError {
+			t.Fatalf("result = %q, terminal = %t, rcode = %d", result, terminal, msg.Rcode)
+		}
+		if len(msg.Ns) != 1 || msg.Ns[0] != soa {
+			t.Fatalf("authority records = %#v, want upstream SOA", msg.Ns)
+		}
+	})
+
+	t.Run("resolver failure becomes SERVFAIL", func(t *testing.T) {
+		msg := new(dns.Msg)
+		result, terminal := setResolutionError(msg, ErrServerNotReachable)
+		if result != "SERVFAIL" || !terminal || msg.Rcode != dns.RcodeServerFailure {
+			t.Fatalf("result = %q, terminal = %t, rcode = %d", result, terminal, msg.Rcode)
+		}
+	})
+
+	t.Run("missing record type remains NOERROR", func(t *testing.T) {
+		msg := new(dns.Msg)
+		result, terminal := setResolutionError(msg, ErrNoSuchRR)
+		if result != "NOERROR" || terminal || msg.Rcode != dns.RcodeSuccess {
+			t.Fatalf("result = %q, terminal = %t, rcode = %d", result, terminal, msg.Rcode)
+		}
+	})
+}
+
 func TestCacheMatching(t *testing.T) {
 	testCases := []struct {
 		test  string

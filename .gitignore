@@ -1,1 +1,8 @@
 resolvy
+
+# Android
+android/.gradle/
+android/.idea/
+android/local.properties
+android/**/build/
+*.iml
