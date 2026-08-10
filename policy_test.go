@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -14,10 +13,7 @@ import (
 )
 
 func TestDomainPolicyBlocksDomainAndSubdomains(t *testing.T) {
-	policy, err := NewDomainPolicy("")
-	if err != nil {
-		t.Fatal(err)
-	}
+	policy := newTestDomainPolicy(t)
 	if _, err := policy.Replace([]string{"Example.COM.", "example.com"}, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -41,19 +37,13 @@ func TestDomainPolicyBlocksDomainAndSubdomains(t *testing.T) {
 }
 
 func TestDomainPolicyPersists(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "policies.json")
-	policy, err := NewDomainPolicy(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	t.Chdir(t.TempDir())
+	policy := openTestDomainPolicy(t)
 	if _, err := policy.Replace([]string{"blocked.example"}, 0); err != nil {
 		t.Fatal(err)
 	}
 
-	reloaded, err := NewDomainPolicy(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	reloaded := openTestDomainPolicy(t)
 	if reloaded.IsAllowed("sub.blocked.example.") {
 		t.Fatal("persisted policy was not loaded")
 	}
@@ -63,7 +53,7 @@ func TestDomainPolicyPersists(t *testing.T) {
 }
 
 func TestPolicyHandlerRequiresBearerToken(t *testing.T) {
-	policy, _ := NewDomainPolicy("")
+	policy := newTestDomainPolicy(t)
 	handler := newPolicyHandler(policy, "secret")
 
 	for _, authorization := range []string{"", "secret", "Basic secret", "Bearer wrong"} {
@@ -78,7 +68,7 @@ func TestPolicyHandlerRequiresBearerToken(t *testing.T) {
 }
 
 func TestPolicyHandlerReplacesAndReadsBlocklist(t *testing.T) {
-	policy, _ := NewDomainPolicy("")
+	policy := newTestDomainPolicy(t)
 	handler := newPolicyHandler(policy, "secret")
 
 	put := httptest.NewRequest(http.MethodPut, policyAPIPath, strings.NewReader(`{"revision":0,"blocked_domains":["B.example.","a.example"]}`))
@@ -106,7 +96,7 @@ func TestPolicyHandlerReplacesAndReadsBlocklist(t *testing.T) {
 }
 
 func TestPolicyHandlerRejectsStaleRevision(t *testing.T) {
-	policy, _ := NewDomainPolicy("")
+	policy := newTestDomainPolicy(t)
 	handler := newPolicyHandler(policy, "secret")
 
 	for requestNumber, wantStatus := range []int{http.StatusOK, http.StatusConflict} {
@@ -121,7 +111,7 @@ func TestPolicyHandlerRejectsStaleRevision(t *testing.T) {
 }
 
 func TestResolverReturnsCacheableNXDOMAINForBlockedDomain(t *testing.T) {
-	policy, _ := NewDomainPolicy("")
+	policy := newTestDomainPolicy(t)
 	if _, err := policy.Replace([]string{"blocked.example"}, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +146,7 @@ func TestResolverReturnsCacheableNXDOMAINForBlockedDomain(t *testing.T) {
 }
 
 func TestDomainPolicyRejectsStaleRevision(t *testing.T) {
-	policy, _ := NewDomainPolicy("")
+	policy := newTestDomainPolicy(t)
 	if _, err := policy.Replace([]string{"first.example"}, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -166,6 +156,22 @@ func TestDomainPolicyRejectsStaleRevision(t *testing.T) {
 	if policy.IsAllowed("first.example") {
 		t.Fatal("stale replacement changed the active policy")
 	}
+}
+
+func newTestDomainPolicy(t *testing.T) *DomainPolicy {
+	t.Helper()
+	t.Chdir(t.TempDir())
+	return openTestDomainPolicy(t)
+}
+
+func openTestDomainPolicy(t *testing.T) *DomainPolicy {
+	t.Helper()
+	policy, err := NewDomainPolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = policy.db.Close() })
+	return policy
 }
 
 type recordingDNSWriter struct {

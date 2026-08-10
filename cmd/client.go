@@ -2,28 +2,25 @@ package main
 
 import (
 	"crypto/tls"
+	"flag"
 	"log"
-	"os"
 	"strings"
 
 	"github.com/miekg/dns"
 )
 
 func main() {
-	host := os.Getenv("CLIENT_BIND_HOST")
-	tcpTls := os.Getenv("CLIENT_TCP_TLS")
-
-	if len(host) == 0 {
-		host = "127.0.0.1:5356"
-	}
+	host := flag.String("server", "127.0.0.1:5356", "DNS server address")
+	tcpTLS := flag.Bool("tcp-tls", false, "Use DNS over TLS")
+	flag.Parse()
 
 	m := new(dns.Msg)
-	serverAddr := host
-	log.Println("BIND", host)
+	serverAddr := *host
+	log.Println("BIND", *host)
 
 	c := new(dns.Client)
-	if len(tcpTls) > 0 {
-		serverName := strings.Split(host, ":")
+	if *tcpTLS {
+		serverName := strings.Split(*host, ":")
 		if len(serverName) < 2 {
 			log.Println("Expected host in host:port format")
 			return

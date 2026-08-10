@@ -718,19 +718,17 @@ func (r *Resolver) isDomainAllowed(domain string) bool {
 }
 
 func main() {
-	var certFile string
-	var privKeyFile string
-	flag.StringVar(&certFile, "cert", "/etc/fullchain.pem", "TLS certificate chain")
-	flag.StringVar(&privKeyFile, "privkey", "/etc/privkey.pem", "TLS private key")
+	certFile := flag.String("cert", "/etc/fullchain.pem", "TLS certificate chain")
+	privKeyFile := flag.String("privkey", "/etc/privkey.pem", "TLS private key")
+	host := flag.String("bind", "127.0.0.1:5356", "DNS server bind address")
+	adminUser := flag.String("admin-user", "admin", "Admin dashboard username")
+	adminPassword := flag.String("admin-password", "", "Admin dashboard password; empty disables the dashboard")
+	adminHost := flag.String("admin-bind", "127.0.0.1:8080", "Admin dashboard bind address")
+	policyToken := flag.String("policy-token", "", "Policy API token; empty disables the API")
+	policyHost := flag.String("policy-bind", "127.0.0.1:8081", "Policy API bind address")
 	flag.Parse()
 
-	host := os.Getenv("BIND_HOST")
-
-	if len(host) == 0 {
-		host = "127.0.0.1:5356"
-	}
-
-	udpServer := dns.Server{Addr: host, Net: "udp"}
+	udpServer := dns.Server{Addr: *host, Net: "udp"}
 	history := NewRequestHistory(500)
 	policy, err := NewDomainPolicy()
 	if err != nil {
@@ -741,22 +739,12 @@ func main() {
 	dns.HandleFunc(".", resolver.handleAll)
 	var wg chan struct{}
 
-	adminPassword := os.Getenv("ADMIN_PASSWORD")
-	if adminPassword == "" {
-		slog.Info("Admin dashboard disabled; set ADMIN_PASSWORD to enable it")
+	if *adminPassword == "" {
+		slog.Info("Admin dashboard disabled; set -admin-password to enable it")
 	} else {
-		adminUser := os.Getenv("ADMIN_USER")
-		if adminUser == "" {
-			adminUser = "admin"
-		}
-		adminHost := os.Getenv("ADMIN_HOST")
-		if adminHost == "" {
-			adminHost = "127.0.0.1:8080"
-		}
-
 		adminServer := &http.Server{
-			Addr:              adminHost,
-			Handler:           newAdminHandler(history, adminUser, adminPassword),
+			Addr:              *adminHost,
+			Handler:           newAdminHandler(history, *adminUser, *adminPassword),
 			ReadHeaderTimeout: 5 * time.Second,
 		}
 		go func() {
@@ -764,22 +752,17 @@ func main() {
 				slog.Error("Admin dashboard failed", "err", err)
 			}
 		}()
-		slog.Info("Started admin dashboard", "host", adminHost, "user", adminUser)
+		slog.Info("Started admin dashboard", "host", *adminHost, "user", *adminUser)
 	}
 
-	policyToken := os.Getenv("POLICY_TOKEN")
-	if policyToken == "" {
-		slog.Info("Policy API disabled; set POLICY_TOKEN to enable it")
+	if *policyToken == "" {
+		slog.Info("Policy API disabled; set -policy-token to enable it")
 	} else {
-		policyHost := os.Getenv("POLICY_HOST")
-		if policyHost == "" {
-			policyHost = "127.0.0.1:8081"
-		}
-		policyServer := newPolicyServer(policyHost, policy, policyToken)
+		policyServer := newPolicyServer(*policyHost, policy, *policyToken)
 
-		if strings.HasSuffix(policyHost, ":443"){
+		if strings.HasSuffix(*policyHost, ":443") {
 			go func() {
-				if err := policyServer.ListenAndServeTLS(certFile, privKeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				if err := policyServer.ListenAndServeTLS(*certFile, *privKeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
 					slog.Error("Policy API failed", "err", err)
 				}
 			}()
@@ -790,7 +773,7 @@ func main() {
 				}
 			}()
 		}
-		slog.Info("Started policy API", "host", policyHost)
+		slog.Info("Started policy API", "host", *policyHost)
 	}
 
 	go func() {
@@ -801,11 +784,11 @@ func main() {
 		}
 		wg <- struct{}{}
 	}()
-	slog.Info("Started udp servers at: ", "host", host)
+	slog.Info("Started udp servers at: ", "host", *host)
 
-	tcpTlsServer := dns.Server{Addr: host, Net: "tcp-tls"}
+	tcpTlsServer := dns.Server{Addr: *host, Net: "tcp-tls"}
 
-	cert, err := tls.LoadX509KeyPair(certFile, privKeyFile)
+	cert, err := tls.LoadX509KeyPair(*certFile, *privKeyFile)
 
 	if err == nil {
 		tcpTlsServer.TLSConfig = &tls.Config{
@@ -821,7 +804,7 @@ func main() {
 
 			wg <- struct{}{}
 		}()
-		slog.Info("Started tcp tls servers at: ", "host", host)
+		slog.Info("Started tcp tls servers at: ", "host", *host)
 	} else {
 		slog.Info("Couldn't start tcp tls server: ", "err", err)
 	}
