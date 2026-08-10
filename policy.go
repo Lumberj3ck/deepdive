@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/subtle"
 	"crypto/tls"
 	"encoding/json"
@@ -8,14 +9,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"database/sql"
+
 	"github.com/miekg/dns"
+	_ "modernc.org/sqlite"
 )
 
 const policyAPIPath = "/api/v1/policies/domains"
@@ -29,35 +31,47 @@ type policyDocument struct {
 
 type DomainPolicy struct {
 	mu       sync.RWMutex
-	filePath string
 	revision uint64
 	blocked  map[string]struct{}
+	db 		 *sql.DB
 }
 
-func NewDomainPolicy(filePath string) (*DomainPolicy, error) {
-	policy := &DomainPolicy{filePath: filePath, blocked: make(map[string]struct{})}
-	if filePath == "" {
-		return policy, nil
+func NewDomainPolicy() (*DomainPolicy, error) {
+	policy := &DomainPolicy{blocked: make(map[string]struct{})}
+	conn, err := sql.Open("sqlite", "policy.db")
+
+	if err != nil{
+		return nil, err
+	}
+	policy.db = conn
+
+	_, err = conn.Exec("create table if not exists policies (id integer not null, primary key (id));")
+
+	if err != nil{
+		conn.Close()
+		return nil, err
+	}
+	_, err = conn.Exec("create table if not exists blocked_domains (id integer not null, domain string not null, policy integer not null, foreign key (policy) references  policies(id), primary key (id), unique (policy, domain));")
+	if err != nil{
+		conn.Close()
+		return nil, err
 	}
 
-	data, err := os.ReadFile(filePath)
-	if errors.Is(err, os.ErrNotExist) {
-		return policy, nil
+	var id uint64
+	err = conn.QueryRow("select coalesce(max(id), 0) from policies;").Scan(&id)
+	if err != nil{
+		conn.Close()
+		return nil, err
 	}
-	if err != nil {
-		return nil, fmt.Errorf("read policy file: %w", err)
-	}
+	policy.revision = id
+	rows, err := conn.Query("select b.domain from policies p join blocked_domains b on (p.id = b.policy) where policy = ?", policy.revision);
 
-	var document policyDocument
-	if err := json.Unmarshal(data, &document); err != nil {
-		return nil, fmt.Errorf("decode policy file: %w", err)
-	}
-	blocked, err := normalizedDomains(document.BlockedDomains)
-	if err != nil {
-		return nil, fmt.Errorf("decode policy file: %w", err)
-	}
-	policy.revision = document.Revision
-	for _, domain := range blocked {
+	for rows.Next(){
+		var domain string
+		if err := rows.Scan(&domain); err != nil{
+			conn.Close()
+			return nil, fmt.Errorf("Failed to load blocked domains: %w", err)
+		}
 		policy.blocked[domain] = struct{}{}
 	}
 	return policy, nil
@@ -94,10 +108,24 @@ func (p *DomainPolicy) Snapshot() policyDocument {
 	return policyDocument{Revision: p.revision, BlockedDomains: domains}
 }
 
+type InvalidDomain struct{ 
+	Err error
+}
+
+func (e *InvalidDomain) Error() string {
+	return e.Err.Error()
+}
+
+func (e *InvalidDomain) Unwrap() error {
+	return e.Err
+}
+
+var errDbOperation = fmt.Errorf("Failed to perform db operation")
+
 func (p *DomainPolicy) Replace(domains []string, expectedRevision uint64) (policyDocument, error) {
 	normalized, err := normalizedDomains(domains)
 	if err != nil {
-		return policyDocument{}, err
+		return policyDocument{}, &InvalidDomain{err}
 	}
 
 	p.mu.Lock()
@@ -106,25 +134,44 @@ func (p *DomainPolicy) Replace(domains []string, expectedRevision uint64) (polic
 		return policyDocument{}, errPolicyRevisionConflict
 	}
 
+    tx, err := p.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return policyDocument{}, errDbOperation
+	}
+	defer tx.Rollback()
+
 	next := policyDocument{Revision: p.revision + 1, BlockedDomains: normalized}
-	if p.filePath != "" {
-		if err := writePolicyFile(p.filePath, next); err != nil {
-			return policyDocument{}, err
+	_, err = tx.Exec("insert into policies default values;")
+	if err != nil{
+
+		return policyDocument{}, errDbOperation
+	}
+
+	for _, domain := range normalized{
+		_, err := tx.Exec("insert into blocked_domains (domain, policy) values (?, ?);", domain, next.Revision)
+		
+		if err != nil{
+			fmt.Println("HERE", err)
+			return policyDocument{}, errDbOperation
 		}
 	}
+
 	p.blocked = make(map[string]struct{}, len(normalized))
 	for _, domain := range normalized {
 		p.blocked[domain] = struct{}{}
 	}
 	p.revision = next.Revision
+
+	err = tx.Commit()
+	if err != nil{
+		return policyDocument{}, errDbOperation
+	}
+
 	return next, nil
 }
 
 func normalizeDomain(domain string) (string, error) {
 	domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
-	if domain == "" {
-		return "", errors.New("domain cannot be empty")
-	}
 	if _, ok := dns.IsDomainName(domain); !ok {
 		return "", fmt.Errorf("invalid domain %q", domain)
 	}
@@ -147,41 +194,6 @@ func normalizedDomains(domains []string) ([]string, error) {
 	}
 	sort.Strings(normalized)
 	return normalized, nil
-}
-
-func writePolicyFile(path string, document policyDocument) error {
-	data, err := json.MarshalIndent(document, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode policy file: %w", err)
-	}
-	data = append(data, '\n')
-
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".resolvy-policy-*")
-	if err != nil {
-		return fmt.Errorf("create temporary policy file: %w", err)
-	}
-	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
-
-	if err := temporary.Chmod(0o600); err != nil {
-		temporary.Close()
-		return fmt.Errorf("set policy file permissions: %w", err)
-	}
-	if _, err := temporary.Write(data); err != nil {
-		temporary.Close()
-		return fmt.Errorf("write policy file: %w", err)
-	}
-	if err := temporary.Sync(); err != nil {
-		temporary.Close()
-		return fmt.Errorf("sync policy file: %w", err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close policy file: %w", err)
-	}
-	if err := os.Rename(temporaryPath, path); err != nil {
-		return fmt.Errorf("replace policy file: %w", err)
-	}
-	return nil
 }
 
 func newPolicyHandler(policy *DomainPolicy, token string) http.Handler {
@@ -213,10 +225,6 @@ func newPolicyHandler(policy *DomainPolicy, token string) http.Handler {
 				writePolicyError(w, http.StatusBadRequest, "body must contain one JSON object")
 				return
 			}
-			if _, err := normalizedDomains(update.BlockedDomains); err != nil {
-				writePolicyError(w, http.StatusBadRequest, err.Error())
-				return
-			}
 			if update.Revision == nil {
 				writePolicyError(w, http.StatusBadRequest, "revision is required")
 				return
@@ -224,6 +232,11 @@ func newPolicyHandler(policy *DomainPolicy, token string) http.Handler {
 			document, err := policy.Replace(update.BlockedDomains, *update.Revision)
 			if errors.Is(err, errPolicyRevisionConflict) {
 				writePolicyError(w, http.StatusConflict, err.Error())
+				return
+			}
+			var inErr *InvalidDomain
+			if errors.As(err, &inErr){
+				writePolicyError(w, http.StatusBadRequest, inErr.Error())
 				return
 			}
 			if err != nil {

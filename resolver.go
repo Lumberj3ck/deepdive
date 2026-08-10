@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -731,7 +732,7 @@ func main() {
 
 	udpServer := dns.Server{Addr: host, Net: "udp"}
 	history := NewRequestHistory(500)
-	policy, err := NewDomainPolicy(os.Getenv("POLICY_FILE"))
+	policy, err := NewDomainPolicy()
 	if err != nil {
 		slog.Error("Failed to load domain policies", "err", err)
 		os.Exit(1)
@@ -772,14 +773,23 @@ func main() {
 	} else {
 		policyHost := os.Getenv("POLICY_HOST")
 		if policyHost == "" {
-			policyHost = "127.0.0.1:8443"
+			policyHost = "127.0.0.1:8081"
 		}
 		policyServer := newPolicyServer(policyHost, policy, policyToken)
-		go func() {
-			if err := policyServer.ListenAndServeTLS(certFile, privKeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				slog.Error("Policy API failed", "err", err)
-			}
-		}()
+
+		if strings.HasSuffix(policyHost, ":443"){
+			go func() {
+				if err := policyServer.ListenAndServeTLS(certFile, privKeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					slog.Error("Policy API failed", "err", err)
+				}
+			}()
+		} else {
+			go func() {
+				if err := policyServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					slog.Error("Policy API failed", "err", err)
+				}
+			}()
+		}
 		slog.Info("Started policy API", "host", policyHost)
 	}
 

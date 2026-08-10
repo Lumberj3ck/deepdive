@@ -43,7 +43,7 @@ func main() {
 
 	d, _, err := c.Exchange(m, serverAddr)
 	if err != nil {
-		log.Fatalf("err during dns exchange: ", err.Error())
+		log.Fatalf("err during dns exchange: %v", err)
 	}
 
 	log.Println(d)
@@ -54,7 +54,7 @@ func main() {
 		d, _, err := c.Exchange(m, serverAddr)
 
 		if err != nil {
-			log.Fatalf("err during dns exchange: ", err.Error())
+			log.Fatalf("err during dns exchange: %v", err)
 		}
 
 		log.Println(d)
