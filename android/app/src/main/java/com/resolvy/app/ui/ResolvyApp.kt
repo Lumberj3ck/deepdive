@@ -144,7 +144,7 @@ private fun ServerSetupScreen(
                     keyboardType = KeyboardType.Uri,
                     imeAction = ImeAction.Next,
                 ),
-                shape = RoundedCornerShape(14.dp),
+                shape = RoundedCornerShape(2.dp),
             )
             Spacer(Modifier.height(18.dp))
             OutlinedTextField(
@@ -165,7 +165,7 @@ private fun ServerSetupScreen(
                     imeAction = ImeAction.Done,
                 ),
                 keyboardActions = KeyboardActions(onDone = { onConnect() }),
-                shape = RoundedCornerShape(14.dp),
+                shape = RoundedCornerShape(2.dp),
             )
             Spacer(Modifier.height(12.dp))
             Text(
@@ -186,7 +186,7 @@ private fun ServerSetupScreen(
                     .fillMaxWidth()
                     .height(54.dp),
                 enabled = !state.busy,
-                shape = RoundedCornerShape(14.dp),
+                shape = RoundedCornerShape(2.dp),
             ) {
                 if (state.busy) {
                     CircularProgressIndicator(
@@ -304,7 +304,7 @@ private fun PolicyScreen(
                         Text("Block")
                     }
                 },
-                shape = RoundedCornerShape(14.dp),
+                shape = RoundedCornerShape(2.dp),
             )
             state.error?.let {
                 Spacer(Modifier.height(14.dp))
@@ -321,7 +321,7 @@ private fun PolicyScreen(
                 Text(
                     state.blockedDomains.size.toString(),
                     modifier = Modifier
-                        .clip(CircleShape)
+                        .clip(RoundedCornerShape(2.dp))
                         .background(MaterialTheme.colorScheme.primaryContainer)
                         .padding(horizontal = 9.dp, vertical = 3.dp),
                     style = MaterialTheme.typography.labelMedium,
@@ -369,7 +369,7 @@ private fun ReviewExcerpt(text: String, source: String? = null) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(2.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant)
             .padding(18.dp),
     ) {
@@ -529,7 +529,7 @@ private fun PolicyReviewTask(domain: String, onComplete: () -> Unit) {
         onClick = { pageIndex++ },
         modifier = Modifier.fillMaxWidth(),
         enabled = actionSecondsRemaining > 0,
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(2.dp),
     ) {
         Text(
             if (actionSecondsRemaining > 0) {
@@ -568,7 +568,7 @@ private fun TranscriptionTask(domain: String, onComplete: () -> Unit) {
         modifier = Modifier.fillMaxWidth(),
         label = { Text("Transcription") },
         minLines = 4,
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(2.dp),
     )
     Spacer(Modifier.height(18.dp))
     Button(
@@ -578,7 +578,7 @@ private fun TranscriptionTask(domain: String, onComplete: () -> Unit) {
         },
         modifier = Modifier.fillMaxWidth(),
         enabled = transcription == excerpt.text,
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(2.dp),
     ) {
         Text("Record transcription")
     }
@@ -615,7 +615,7 @@ private fun DomainEntryTask(domain: String, onComplete: () -> Unit) {
         label = { Text("Domain") },
         singleLine = true,
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(2.dp),
     )
     Spacer(Modifier.height(18.dp))
     Button(
@@ -625,7 +625,7 @@ private fun DomainEntryTask(domain: String, onComplete: () -> Unit) {
         },
         modifier = Modifier.fillMaxWidth(),
         enabled = entry == domain,
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(2.dp),
     ) {
         Text("Record entry")
     }
@@ -667,7 +667,7 @@ private fun ReverseConfirmationTask(domain: String, onComplete: () -> Unit) {
         label = { Text("Confirmation") },
         singleLine = true,
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(2.dp),
     )
     Spacer(Modifier.height(18.dp))
     Button(
@@ -677,7 +677,7 @@ private fun ReverseConfirmationTask(domain: String, onComplete: () -> Unit) {
         },
         modifier = Modifier.fillMaxWidth(),
         enabled = entry == expected,
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(2.dp),
     ) {
         Text("Record confirmation")
     }
@@ -724,7 +724,7 @@ private fun RemovalFinishButton(domain: String, onComplete: () -> Unit) {
     Button(
         onClick = onComplete,
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(2.dp),
     ) {
         Text("Remove $domain")
     }
@@ -808,21 +808,20 @@ private fun BrandMark() {
         Box(
             modifier = Modifier
                 .size(30.dp)
-                .clip(RoundedCornerShape(9.dp))
-                .background(MaterialTheme.colorScheme.primaryContainer),
+                .background(MaterialTheme.colorScheme.primary),
             contentAlignment = Alignment.Center,
         ) {
             Box(
                 modifier = Modifier
-                    .size(12.dp)
-                    .border(3.dp, MaterialTheme.colorScheme.onPrimaryContainer, CircleShape),
+                    .size(8.dp)
+                    .background(MaterialTheme.colorScheme.onPrimary),
             )
         }
         Spacer(Modifier.width(10.dp))
         Text(
             "RESOLVY",
             style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Black,
+            fontWeight = FontWeight.Bold,
             letterSpacing = androidx.compose.ui.unit.TextUnit.Unspecified,
         )
     }
@@ -832,7 +831,7 @@ private fun BrandMark() {
 private fun StatusBadge(revision: Long, synced: Boolean) {
     Row(
         modifier = Modifier
-            .clip(RoundedCornerShape(50))
+            .clip(RoundedCornerShape(2.dp))
             .background(
                 if (synced) MaterialTheme.colorScheme.primaryContainer
                 else MaterialTheme.colorScheme.surfaceVariant,
@@ -869,7 +868,7 @@ private fun DomainRow(domain: String, enabled: Boolean, onRemove: () -> Unit) {
         Box(
             modifier = Modifier
                 .size(36.dp)
-                .clip(RoundedCornerShape(10.dp))
+                .clip(RoundedCornerShape(2.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center,
         ) {
@@ -902,13 +901,13 @@ private fun EmptyPolicies(loaded: Boolean, modifier: Modifier = Modifier) {
         Box(
             modifier = Modifier
                 .size(72.dp)
-                .border(2.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
+                .border(2.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(2.dp)),
             contentAlignment = Alignment.Center,
         ) {
             Box(
                 modifier = Modifier
                     .size(28.dp)
-                    .border(5.dp, MaterialTheme.colorScheme.primary, CircleShape),
+                    .border(5.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(2.dp)),
             )
         }
         Spacer(Modifier.height(18.dp))
@@ -930,7 +929,7 @@ private fun ErrorBanner(message: String, onDismiss: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(2.dp))
             .background(MaterialTheme.colorScheme.errorContainer)
             .padding(start = 14.dp, top = 8.dp, bottom = 8.dp, end = 6.dp),
         verticalAlignment = Alignment.CenterVertically,

@@ -2,74 +2,94 @@ package com.resolvy.app.ui
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-private val Ink = Color(0xFF20251F)
-private val Paper = Color(0xFFF5F1E8)
-private val Moss = Color(0xFF345B42)
-private val Acid = Color(0xFFD8F45B)
-private val Rust = Color(0xFFAD482F)
-
 private val LightColors = lightColorScheme(
-    primary = Moss,
+    primary = Color.Black,
     onPrimary = Color.White,
-    primaryContainer = Acid,
-    onPrimaryContainer = Ink,
-    secondary = Rust,
-    background = Paper,
-    onBackground = Ink,
-    surface = Color(0xFFFFFCF5),
-    onSurface = Ink,
-    surfaceVariant = Color(0xFFE7E2D7),
-    onSurfaceVariant = Color(0xFF555C53),
-    error = Color(0xFF9D2D20),
+    primaryContainer = Color(0xFFE8E8E8),
+    onPrimaryContainer = Color.Black,
+    secondary = Color(0xFF333333),
+    onSecondary = Color.White,
+    background = Color.White,
+    onBackground = Color.Black,
+    surface = Color.White,
+    onSurface = Color.Black,
+    surfaceVariant = Color(0xFFF1F1F1),
+    onSurfaceVariant = Color(0xFF4A4A4A),
+    outline = Color(0xFF707070),
+    outlineVariant = Color(0xFFD6D6D6),
+    error = Color.Black,
+    onError = Color.White,
+    errorContainer = Color(0xFFE8E8E8),
+    onErrorContainer = Color.Black,
 )
 
 private val DarkColors = darkColorScheme(
-    primary = Color(0xFFA7D5AE),
-    onPrimary = Color(0xFF12351F),
-    primaryContainer = Color(0xFF48652B),
-    onPrimaryContainer = Color(0xFFE8FFC1),
-    secondary = Color(0xFFFFB4A2),
-    background = Color(0xFF181B17),
-    onBackground = Color(0xFFE7E4DB),
-    surface = Color(0xFF20241F),
-    onSurface = Color(0xFFE7E4DB),
-    surfaceVariant = Color(0xFF343A33),
-    onSurfaceVariant = Color(0xFFC3C9BE),
+    primary = Color.White,
+    onPrimary = Color.Black,
+    primaryContainer = Color(0xFF292929),
+    onPrimaryContainer = Color.White,
+    secondary = Color(0xFFCCCCCC),
+    onSecondary = Color.Black,
+    background = Color.Black,
+    onBackground = Color.White,
+    surface = Color.Black,
+    onSurface = Color.White,
+    surfaceVariant = Color(0xFF1C1C1C),
+    onSurfaceVariant = Color(0xFFB8B8B8),
+    outline = Color(0xFF909090),
+    outlineVariant = Color(0xFF383838),
+    error = Color.White,
+    onError = Color.Black,
+    errorContainer = Color(0xFF292929),
+    onErrorContainer = Color.White,
+)
+
+private val ResolvyShapes = Shapes(
+    extraSmall = RoundedCornerShape(2.dp),
+    small = RoundedCornerShape(2.dp),
+    medium = RoundedCornerShape(2.dp),
+    large = RoundedCornerShape(2.dp),
+    extraLarge = RoundedCornerShape(2.dp),
 )
 
 @Composable
 fun ResolvyTheme(content: @Composable () -> Unit) {
     val typography = MaterialTheme.typography.copy(
         displayLarge = TextStyle(
-            fontFamily = FontFamily.Serif,
-            fontWeight = FontWeight.Bold,
-            fontSize = 54.sp,
-            lineHeight = 56.sp,
+            fontFamily = FontFamily.SansSerif,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 42.sp,
+            lineHeight = 46.sp,
         ),
         headlineLarge = TextStyle(
-            fontFamily = FontFamily.Serif,
-            fontWeight = FontWeight.Bold,
-            fontSize = 36.sp,
-            lineHeight = 40.sp,
+            fontFamily = FontFamily.SansSerif,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 30.sp,
+            lineHeight = 34.sp,
         ),
         titleLarge = TextStyle(
-            fontFamily = FontFamily.Serif,
-            fontWeight = FontWeight.Bold,
-            fontSize = 24.sp,
+            fontFamily = FontFamily.SansSerif,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 22.sp,
+            lineHeight = 28.sp,
         ),
     )
     MaterialTheme(
         colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors,
         typography = typography,
+        shapes = ResolvyShapes,
         content = content,
     )
 }
