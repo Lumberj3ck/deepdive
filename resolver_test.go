@@ -184,7 +184,7 @@ func TestCNAMEResolvePath(t *testing.T) {
 		{name: "blog.dnsimple.com"},
 		{name: "www.rfc-editor.org", wantEmpty: true},
 	}
-	v := os.Getenv("RESOLVY_LOGS")
+	v := os.Getenv("DEEP_DIVE_LOGS")
 	var writer io.Writer
 	if v == "" {
 		writer = io.Discard
@@ -228,7 +228,7 @@ func TestResolveWithWarmCache(t *testing.T) {
 		{name: "www.rfc-editor.org", wantEmpty: true},
 		{name: "www.github.com"},
 	}
-	v := os.Getenv("RESOLVY_LOGS")
+	v := os.Getenv("DEEP_DIVE_LOGS")
 	var writer io.Writer
 	if v == "" {
 		writer = io.Discard

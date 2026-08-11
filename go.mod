@@ -1,4 +1,4 @@
-module resolvy
+module deepdive
 
 go 1.25.5
 

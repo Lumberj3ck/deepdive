@@ -65,7 +65,7 @@ var adminTemplate = template.Must(template.New("admin").Parse(`<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Resolvy requests</title>
+<title>Deep Dive requests</title>
 <style>
 body { font: 14px sans-serif; margin: 2rem; }
 table { border-collapse: collapse; width: 100%; }
@@ -94,7 +94,7 @@ func newAdminHandler(history *RequestHistory, username, password string) http.Ha
 		userMatches := subtle.ConstantTimeCompare([]byte(providedUser), []byte(username)) == 1
 		passwordMatches := subtle.ConstantTimeCompare([]byte(providedPassword), []byte(password)) == 1
 		if !ok || !userMatches || !passwordMatches {
-			w.Header().Set("WWW-Authenticate", `Basic realm="resolvy admin", charset="UTF-8"`)
+			w.Header().Set("WWW-Authenticate", `Basic realm="Deep Dive admin", charset="UTF-8"`)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}

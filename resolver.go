@@ -669,8 +669,8 @@ func (r *Resolver) handleAll(w dns.ResponseWriter, m *dns.Msg) {
 			msg.Rcode = dns.RcodeNameError
 			msg.Ns = append(msg.Ns, &dns.SOA{
 				Hdr:     dns.RR_Header{Name: q.Name, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: blockedResponseTTL},
-				Ns:      "ns.resolvy.invalid.",
-				Mbox:    "hostmaster.resolvy.invalid.",
+				Ns:      "ns.deepdive.invalid.",
+				Mbox:    "hostmaster.deepdive.invalid.",
 				Serial:  1,
 				Refresh: 3600,
 				Retry:   600,
