@@ -1,9 +1,9 @@
-package com.resolvy.app.ui
+package com.deepdive.app.ui
 
-import com.resolvy.app.data.PolicyApi
-import com.resolvy.app.data.PolicyDocument
-import com.resolvy.app.data.ServerConfig
-import com.resolvy.app.data.ServerSettings
+import com.deepdive.app.data.PolicyApi
+import com.deepdive.app.data.PolicyDocument
+import com.deepdive.app.data.ServerConfig
+import com.deepdive.app.data.ServerSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -19,7 +19,7 @@ import org.junit.Before
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
-class ResolvyViewModelTest {
+class DeepDiveViewModelTest {
     private val dispatcher = StandardTestDispatcher()
 
     @Before
@@ -36,7 +36,7 @@ class ResolvyViewModelTest {
     fun connectTestsAndStoresServer() = runTest(dispatcher) {
         val settings = FakeSettings()
         val api = FakePolicyApi(PolicyDocument(4, listOf("ads.example")))
-        val viewModel = ResolvyViewModel(settings, api)
+        val viewModel = DeepDiveViewModel(settings, api)
 
         viewModel.updateServerDraft("resolver.example.com:8443")
         viewModel.updateTokenDraft("secret")
@@ -54,7 +54,7 @@ class ResolvyViewModelTest {
         val config = ServerConfig("https://resolver.example.com", "secret")
         val settings = FakeSettings(config)
         val api = FakePolicyApi(PolicyDocument(2, listOf("ads.example")))
-        val viewModel = ResolvyViewModel(settings, api)
+        val viewModel = DeepDiveViewModel(settings, api)
         advanceUntilIdle()
 
         viewModel.addDomain(" Tracker.Example. ") {}
@@ -69,7 +69,7 @@ class ResolvyViewModelTest {
         val config = ServerConfig("https://resolver.example.com", "secret")
         val settings = FakeSettings(config)
         val api = FakePolicyApi(PolicyDocument(0, emptyList()), failGet = true)
-        val viewModel = ResolvyViewModel(settings, api)
+        val viewModel = DeepDiveViewModel(settings, api)
         advanceUntilIdle()
 
         assertFalse(viewModel.state.value.canModifyPolicies)

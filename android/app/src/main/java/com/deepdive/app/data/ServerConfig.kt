@@ -1,4 +1,4 @@
-package com.resolvy.app.data
+package com.deepdive.app.data
 
 import java.net.URI
 

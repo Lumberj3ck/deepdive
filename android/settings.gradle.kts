@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Resolvy"
+rootProject.name = "DeepDive"
 include(":app")

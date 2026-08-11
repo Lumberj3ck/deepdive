@@ -1,4 +1,4 @@
-package com.resolvy.app.ui
+package com.deepdive.app.ui
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
@@ -56,7 +56,7 @@ private val DarkColors = darkColorScheme(
     onErrorContainer = Color.White,
 )
 
-private val ResolvyShapes = Shapes(
+private val DeepDiveShapes = Shapes(
     extraSmall = RoundedCornerShape(2.dp),
     small = RoundedCornerShape(2.dp),
     medium = RoundedCornerShape(2.dp),
@@ -65,7 +65,7 @@ private val ResolvyShapes = Shapes(
 )
 
 @Composable
-fun ResolvyTheme(content: @Composable () -> Unit) {
+fun DeepDiveTheme(content: @Composable () -> Unit) {
     val typography = MaterialTheme.typography.copy(
         displayLarge = TextStyle(
             fontFamily = FontFamily.SansSerif,
@@ -89,7 +89,7 @@ fun ResolvyTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors,
         typography = typography,
-        shapes = ResolvyShapes,
+        shapes = DeepDiveShapes,
         content = content,
     )
 }

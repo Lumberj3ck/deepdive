@@ -1,4 +1,4 @@
-package com.resolvy.app.data
+package com.deepdive.app.data
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue

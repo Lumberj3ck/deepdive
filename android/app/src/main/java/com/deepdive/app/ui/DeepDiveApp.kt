@@ -1,4 +1,4 @@
-package com.resolvy.app.ui
+package com.deepdive.app.ui
 
 import android.os.SystemClock
 import androidx.compose.foundation.background
@@ -61,7 +61,7 @@ import kotlinx.coroutines.delay
 import kotlin.random.Random
 
 @Composable
-fun ResolvyApp(state: ResolvyUiState, viewModel: ResolvyViewModel) {
+fun DeepDiveApp(state: DeepDiveUiState, viewModel: DeepDiveViewModel) {
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         when {
             state.initializing -> LoadingScreen()
@@ -94,7 +94,7 @@ private fun LoadingScreen() {
 
 @Composable
 private fun ServerSetupScreen(
-    state: ResolvyUiState,
+    state: DeepDiveUiState,
     onServerChange: (String) -> Unit,
     onTokenChange: (String) -> Unit,
     onConnect: () -> Unit,
@@ -119,12 +119,12 @@ private fun ServerSetupScreen(
             BrandMark()
             Spacer(Modifier.height(48.dp))
             Text(
-                text = if (state.config == null) "Connect to Resolvy" else "Server settings",
+                text = if (state.config == null) "Connect to Deep Dive" else "Server settings",
                 style = MaterialTheme.typography.displayLarge,
             )
             Spacer(Modifier.height(16.dp))
             Text(
-                text = "Connect to your Resolvy server to manage blocked domains.",
+                text = "Connect to your Deep Dive server to manage blocked domains.",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -215,7 +215,7 @@ private fun ServerSetupScreen(
 
 @Composable
 private fun PolicyScreen(
-    state: ResolvyUiState,
+    state: DeepDiveUiState,
     onAdd: (String, () -> Unit) -> Unit,
     onRemove: (String, () -> Unit) -> Unit,
     onRefresh: () -> Unit,
@@ -819,7 +819,7 @@ private fun BrandMark() {
         }
         Spacer(Modifier.width(10.dp))
         Text(
-            "RESOLVY",
+            "DEEP DIVE",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
             letterSpacing = androidx.compose.ui.unit.TextUnit.Unspecified,

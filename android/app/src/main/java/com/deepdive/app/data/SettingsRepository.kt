@@ -1,4 +1,4 @@
-package com.resolvy.app.data
+package com.deepdive.app.data
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
@@ -10,7 +10,7 @@ interface ServerSettings {
 }
 
 class SettingsRepository(context: Context) : ServerSettings {
-    private val preferences = context.getSharedPreferences("resolvy_server", Context.MODE_PRIVATE)
+    private val preferences = context.getSharedPreferences("deep_dive_server", Context.MODE_PRIVATE)
 
     override fun load(): ServerConfig? {
         val baseUrl = preferences.getString(KEY_BASE_URL, null) ?: return null

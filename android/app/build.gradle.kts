@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.resolvy.app"
+    namespace = "com.deepdive.app"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.resolvy.app"
+        applicationId = "com.deepdive.app"
         minSdk = 26
         targetSdk = 37
         versionCode = 1

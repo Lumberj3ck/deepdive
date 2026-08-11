@@ -1,14 +1,14 @@
-package com.resolvy.app.ui
+package com.deepdive.app.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.resolvy.app.data.PolicyApi
-import com.resolvy.app.data.PolicyDocument
-import com.resolvy.app.data.ServerConfig
-import com.resolvy.app.data.ServerSettings
-import com.resolvy.app.data.normalizeDomain
-import com.resolvy.app.data.normalizeServerUrl
+import com.deepdive.app.data.PolicyApi
+import com.deepdive.app.data.PolicyDocument
+import com.deepdive.app.data.ServerConfig
+import com.deepdive.app.data.ServerSettings
+import com.deepdive.app.data.normalizeDomain
+import com.deepdive.app.data.normalizeServerUrl
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,7 +17,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-data class ResolvyUiState(
+data class DeepDiveUiState(
     val initializing: Boolean = true,
     val config: ServerConfig? = null,
     val editingServer: Boolean = false,
@@ -34,12 +34,12 @@ data class ResolvyUiState(
     val canModifyPolicies: Boolean get() = policyLoaded && synced && !busy
 }
 
-class ResolvyViewModel(
+class DeepDiveViewModel(
     private val settings: ServerSettings,
     private val policyApi: PolicyApi,
 ) : ViewModel() {
-    private val mutableState = MutableStateFlow(ResolvyUiState())
-    val state: StateFlow<ResolvyUiState> = mutableState.asStateFlow()
+    private val mutableState = MutableStateFlow(DeepDiveUiState())
+    val state: StateFlow<DeepDiveUiState> = mutableState.asStateFlow()
     private var operation: Job? = null
 
     init {
@@ -175,7 +175,7 @@ class ResolvyViewModel(
         }
     }
 
-    private fun ResolvyUiState.withDocument(document: PolicyDocument) = copy(
+    private fun DeepDiveUiState.withDocument(document: PolicyDocument) = copy(
         blockedDomains = document.blockedDomains,
         revision = document.revision,
         policyLoaded = true,
@@ -188,8 +188,8 @@ class ResolvyViewModel(
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
-            require(modelClass.isAssignableFrom(ResolvyViewModel::class.java))
-            return ResolvyViewModel(settings, policyApi) as T
+            require(modelClass.isAssignableFrom(DeepDiveViewModel::class.java))
+            return DeepDiveViewModel(settings, policyApi) as T
         }
     }
 }

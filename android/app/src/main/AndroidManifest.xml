@@ -7,10 +7,10 @@
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="false"
         android:icon="@mipmap/ic_launcher"
-        android:label="Resolvy"
+        android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Resolvy"
+        android:theme="@style/Theme.DeepDive"
         android:usesCleartextTraffic="false">
         <activity
             android:name=".MainActivity"
