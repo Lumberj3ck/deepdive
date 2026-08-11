@@ -1,5 +1,6 @@
 package com.resolvy.app.ui
 
+import android.os.SystemClock
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -35,8 +36,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -51,6 +55,10 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import kotlinx.coroutines.delay
+import kotlin.random.Random
 
 @Composable
 fun ResolvyApp(state: ResolvyUiState, viewModel: ResolvyViewModel) {
@@ -209,12 +217,29 @@ private fun ServerSetupScreen(
 private fun PolicyScreen(
     state: ResolvyUiState,
     onAdd: (String, () -> Unit) -> Unit,
-    onRemove: (String) -> Unit,
+    onRemove: (String, () -> Unit) -> Unit,
     onRefresh: () -> Unit,
     onEditServer: () -> Unit,
     onDismissError: () -> Unit,
 ) {
     var newDomain by rememberSaveable { mutableStateOf("") }
+    var removalRequest by remember { mutableStateOf<RemovalRequest?>(null) }
+    var taskAssignments by rememberSaveable { mutableStateOf(emptyMap<String, Int>()) }
+
+    removalRequest?.let { request ->
+        RemovalChallenge(
+            domain = request.domain,
+            task = request.task,
+            onCancel = { removalRequest = null },
+            onComplete = {
+                removalRequest = null
+                onRemove(request.domain) {
+                    taskAssignments = taskAssignments - request.domain
+                }
+            },
+        )
+        return
+    }
 
     Column(
         modifier = Modifier
@@ -326,7 +351,11 @@ private fun PolicyScreen(
                     DomainRow(
                         domain = domain,
                         enabled = state.canModifyPolicies,
-                        onRemove = { onRemove(domain) },
+                        onRemove = {
+                            val taskIndex = taskAssignments[domain] ?: Random.nextInt(RemovalTask.entries.size)
+                            taskAssignments = taskAssignments + (domain to taskIndex)
+                            removalRequest = RemovalRequest(domain, RemovalTask.entries[taskIndex])
+                        },
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
                 }
@@ -334,6 +363,444 @@ private fun PolicyScreen(
         }
     }
 }
+
+@Composable
+private fun ReviewExcerpt(text: String, source: String? = null) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(18.dp),
+    ) {
+        Text(
+            text = text,
+            fontFamily = FontFamily.Monospace,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        source?.let {
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = it,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ReviewExcerpt(excerpt: PublishedExcerpt) = ReviewExcerpt(excerpt.text, excerpt.source)
+
+private val removalFilingRecords = listOf(
+    "Account archive",
+    "Annual billing",
+    "Asset register",
+    "Audit copy",
+    "Backup ledger",
+    "Billing index",
+    "Compliance file",
+    "Contact register",
+    "Department note",
+    "Equipment log",
+    "Expense record",
+    "Filing request",
+    "General archive",
+    "Inventory sheet",
+    "Meeting minutes",
+    "Monthly statement",
+    "Office register",
+    "Operations copy",
+    "Paper trail",
+    "Quarterly report",
+    "Records ledger",
+    "Retention schedule",
+    "Service invoice",
+    "Storage manifest",
+    "Workflow record",
+)
+
+@Composable
+private fun RemovalChallenge(
+    domain: String,
+    task: RemovalTask,
+    onCancel: () -> Unit,
+    onComplete: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .safeDrawingPadding(),
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxHeight()
+                .widthIn(max = 680.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp, vertical = 28.dp),
+        ) {
+            BrandMark()
+            Spacer(Modifier.height(42.dp))
+            Text("Removal review", style = MaterialTheme.typography.displayLarge)
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = "A removal task has been selected for $domain.",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(28.dp))
+            Text(
+                text = "TASK: ${task.label.uppercase()}",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(16.dp))
+
+            when (task) {
+                RemovalTask.Review -> PolicyReviewTask(domain, onComplete)
+                RemovalTask.Transcription -> TranscriptionTask(domain, onComplete)
+                RemovalTask.DomainEntries -> DomainEntryTask(domain, onComplete)
+                RemovalTask.ReverseConfirmation -> ReverseConfirmationTask(domain, onComplete)
+                RemovalTask.Filing -> FilingTask(domain, onComplete)
+            }
+
+            Spacer(Modifier.height(18.dp))
+            TextButton(
+                onClick = onCancel,
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+            ) {
+                Text("Keep domain blocked")
+            }
+        }
+    }
+}
+
+@Composable
+private fun PolicyReviewTask(domain: String, onComplete: () -> Unit) {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    var pageIndex by remember { mutableStateOf(0) }
+    var readingSecondsRemaining by remember { mutableStateOf(REVIEW_PAGE_SECONDS) }
+    var actionSecondsRemaining by remember { mutableStateOf(0) }
+    var timerAttempt by remember { mutableStateOf(0) }
+
+    if (pageIndex == balancedReviewPages.size) {
+        RemovalFinishButton(domain, onComplete)
+        return
+    }
+
+    LaunchedEffect(pageIndex, timerAttempt) {
+        var readingMillisRemaining = REVIEW_PAGE_SECONDS * 1_000L
+        var previousUpdate = SystemClock.elapsedRealtime()
+        readingSecondsRemaining = REVIEW_PAGE_SECONDS
+        actionSecondsRemaining = 0
+        while (readingMillisRemaining > 0) {
+            delay(TIMER_UPDATE_MS)
+            val now = SystemClock.elapsedRealtime()
+            if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                readingMillisRemaining -= minOf(now - previousUpdate, TIMER_UPDATE_MS)
+                readingSecondsRemaining = ((readingMillisRemaining + 999) / 1_000).toInt()
+            }
+            previousUpdate = now
+        }
+        readingSecondsRemaining = 0
+        val actionDeadline = SystemClock.elapsedRealtime() + REVIEW_ACTION_SECONDS * 1_000L
+        actionSecondsRemaining = secondsUntil(actionDeadline)
+        while (SystemClock.elapsedRealtime() < actionDeadline) {
+            delayUntilNextTimerUpdate(actionDeadline)
+            actionSecondsRemaining = secondsUntil(actionDeadline)
+        }
+        actionSecondsRemaining = 0
+        pageIndex = 0
+        timerAttempt++
+    }
+
+    Text("Review policy record", style = MaterialTheme.typography.titleLarge)
+    Spacer(Modifier.height(10.dp))
+    Text(
+        text = "PAGE ${pageIndex + 1} OF ${balancedReviewPages.size}",
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = FontWeight.Bold,
+    )
+    Spacer(Modifier.height(16.dp))
+    ReviewExcerpt(balancedReviewPages[pageIndex])
+    Spacer(Modifier.height(22.dp))
+    Button(
+        onClick = { pageIndex++ },
+        modifier = Modifier.fillMaxWidth(),
+        enabled = actionSecondsRemaining > 0,
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Text(
+            if (actionSecondsRemaining > 0) {
+                "Continue now ($actionSecondsRemaining seconds)"
+            } else {
+                "Continue in $readingSecondsRemaining seconds"
+            },
+        )
+    }
+}
+
+@Composable
+private fun TranscriptionTask(domain: String, onComplete: () -> Unit) {
+    var excerptIndex by remember { mutableStateOf(0) }
+    var transcription by remember { mutableStateOf("") }
+
+    if (excerptIndex == removalTranscriptions.size) {
+        RemovalFinishButton(domain, onComplete)
+        return
+    }
+
+    val excerpt = removalTranscriptions[excerptIndex]
+    Text("Transcribe the record", style = MaterialTheme.typography.titleLarge)
+    Spacer(Modifier.height(10.dp))
+    Text(
+        text = "EXCERPT ${excerptIndex + 1} OF ${removalTranscriptions.size}",
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = FontWeight.Bold,
+    )
+    Spacer(Modifier.height(16.dp))
+    ReviewExcerpt(excerpt)
+    Spacer(Modifier.height(18.dp))
+    OutlinedTextField(
+        value = transcription,
+        onValueChange = { transcription = it },
+        modifier = Modifier.fillMaxWidth(),
+        label = { Text("Transcription") },
+        minLines = 4,
+        shape = RoundedCornerShape(14.dp),
+    )
+    Spacer(Modifier.height(18.dp))
+    Button(
+        onClick = {
+            excerptIndex++
+            transcription = ""
+        },
+        modifier = Modifier.fillMaxWidth(),
+        enabled = transcription == excerpt.text,
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Text("Record transcription")
+    }
+}
+
+@Composable
+private fun DomainEntryTask(domain: String, onComplete: () -> Unit) {
+    val entriesRequired = remember(domain) { entriesForDomain(domain) }
+    var entriesRecorded by remember { mutableStateOf(0) }
+    var entry by remember { mutableStateOf("") }
+
+    if (entriesRecorded == entriesRequired) {
+        RemovalFinishButton(domain, onComplete)
+        return
+    }
+
+    Text("Record the domain", style = MaterialTheme.typography.titleLarge)
+    Spacer(Modifier.height(10.dp))
+    Text(
+        text = "Enter the domain exactly. Each entry is recorded separately.",
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(18.dp))
+    Text(
+        text = "ENTRY ${entriesRecorded + 1} OF $entriesRequired",
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = FontWeight.Bold,
+    )
+    Spacer(Modifier.height(12.dp))
+    OutlinedTextField(
+        value = entry,
+        onValueChange = { entry = it },
+        modifier = Modifier.fillMaxWidth(),
+        label = { Text("Domain") },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
+        shape = RoundedCornerShape(14.dp),
+    )
+    Spacer(Modifier.height(18.dp))
+    Button(
+        onClick = {
+            entriesRecorded++
+            entry = ""
+        },
+        modifier = Modifier.fillMaxWidth(),
+        enabled = entry == domain,
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Text("Record entry")
+    }
+}
+
+@Composable
+private fun ReverseConfirmationTask(domain: String, onComplete: () -> Unit) {
+    val entriesRequired = remember(domain) { entriesForDomain(domain) }
+    var entriesRecorded by remember { mutableStateOf(0) }
+    var entry by remember { mutableStateOf("") }
+    val reversedDomain = domain.reversed()
+
+    if (entriesRecorded == entriesRequired) {
+        RemovalFinishButton(domain, onComplete)
+        return
+    }
+
+    val isReversedEntry = entriesRecorded % 2 == 0
+    val expected = if (isReversedEntry) reversedDomain else domain
+    Text("Confirm the record", style = MaterialTheme.typography.titleLarge)
+    Spacer(Modifier.height(10.dp))
+    Text(
+        text = "CONFIRMATION ${entriesRecorded + 1} OF $entriesRequired",
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = FontWeight.Bold,
+    )
+    Spacer(Modifier.height(12.dp))
+    Text(
+        text = if (isReversedEntry) "Enter the domain in reverse order." else "Enter the domain normally.",
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(12.dp))
+    ReviewExcerpt(domain)
+    Spacer(Modifier.height(18.dp))
+    OutlinedTextField(
+        value = entry,
+        onValueChange = { entry = it },
+        modifier = Modifier.fillMaxWidth(),
+        label = { Text("Confirmation") },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
+        shape = RoundedCornerShape(14.dp),
+    )
+    Spacer(Modifier.height(18.dp))
+    Button(
+        onClick = {
+            entriesRecorded++
+            entry = ""
+        },
+        modifier = Modifier.fillMaxWidth(),
+        enabled = entry == expected,
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Text("Record confirmation")
+    }
+}
+
+@Composable
+private fun FilingTask(domain: String, onComplete: () -> Unit) {
+    val filingRecords = remember(domain) {
+        mutableStateListOf<String>().apply {
+            addAll(removalFilingRecords.take(20).shuffled(Random(domain.hashCode())))
+        }
+    }
+
+    Text("File the records", style = MaterialTheme.typography.titleLarge)
+    Spacer(Modifier.height(10.dp))
+    Text(
+        text = "Select the remaining records in alphabetical order.",
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(16.dp))
+    Text(
+        text = "RECORDS REMAINING ${filingRecords.size}",
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = FontWeight.Bold,
+    )
+    Spacer(Modifier.height(8.dp))
+    filingRecords.forEach { record ->
+        TextButton(
+            onClick = {
+                if (record == filingRecords.minOrNull()) filingRecords.remove(record)
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(record, modifier = Modifier.fillMaxWidth())
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+    }
+    if (filingRecords.isEmpty()) RemovalFinishButton(domain, onComplete)
+}
+
+@Composable
+private fun RemovalFinishButton(domain: String, onComplete: () -> Unit) {
+    Spacer(Modifier.height(20.dp))
+    Button(
+        onClick = onComplete,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Text("Remove $domain")
+    }
+}
+
+private fun entriesForDomain(domain: String): Int =
+    (160 + domain.length - 1).div(domain.length).coerceIn(8, 20)
+
+private data class RemovalRequest(val domain: String, val task: RemovalTask)
+
+private enum class RemovalTask(val label: String) {
+    Review("policy review"),
+    Transcription("transcription"),
+    DomainEntries("domain record"),
+    ReverseConfirmation("reverse confirmation"),
+    Filing("record filing"),
+}
+
+private data class PublishedExcerpt(val text: String, val source: String = WEALTH_OF_NATIONS_SOURCE)
+
+private val balancedReviewPages = listOf(
+    PublishedExcerpt(
+        "The annual labour of every nation is the fund which originally supplies it with all the " +
+            "necessaries and conveniencies of life which it annually consumes, and which consist " +
+            "always either in the immediate produce of that labour, or in what is purchased with " +
+            "that produce from other nations.",
+    ),
+    PublishedExcerpt(
+        "The greatest improvements in the productive powers of labour, and the greater part of the " +
+            "skill, dexterity, and judgment, with which it is anywhere directed, or applied, seem " +
+            "to have been the effects of the division of labour.",
+    ),
+    PublishedExcerpt(
+        "This division of labour, from which so many advantages are derived, is not originally the " +
+            "effect of any human wisdom, which foresees and intends that general opulence to which " +
+            "it gives occasion.",
+    ),
+    PublishedExcerpt(
+        "As it is the power of exchanging that gives occasion to the division of labour, so the " +
+            "extent of this division must always be limited by the extent of that power, or, in " +
+            "other words, by the extent of the market.",
+    ),
+    PublishedExcerpt(
+        "Nobody ever saw a dog make a fair and deliberate exchange of one bone for another with " +
+            "another dog. Nobody ever saw one animal, by its gestures and natural cries signify to " +
+            "another, this is mine, that yours; I am willing to give this for that.",
+    ),
+)
+
+private const val REVIEW_PAGE_SECONDS = 8
+private const val REVIEW_ACTION_SECONDS = 3
+private const val TIMER_UPDATE_MS = 250L
+
+private fun secondsUntil(deadline: Long): Int {
+    val remaining = (deadline - SystemClock.elapsedRealtime()).coerceAtLeast(0)
+    return ((remaining + 999) / 1_000).toInt()
+}
+
+private suspend fun delayUntilNextTimerUpdate(deadline: Long) {
+    val remaining = (deadline - SystemClock.elapsedRealtime()).coerceAtLeast(1)
+    delay(minOf(TIMER_UPDATE_MS, remaining))
+}
+
+private val removalTranscriptions = listOf(
+    PublishedExcerpt(
+        "The effects of the division of labour, in the general business of society, will be more " +
+            "easily understood, by considering in what manner it operates in some particular manufactures.",
+    ),
+    PublishedExcerpt(
+        "Every man thus lives by exchanging, or becomes, in some measure, a merchant, and the society " +
+            "itself grows to be what is properly a commercial society.",
+    ),
+)
+
+private const val WEALTH_OF_NATIONS_SOURCE =
+    "Adam Smith, The Wealth of Nations (1776). Public-domain text via Project Gutenberg, eBook 3300."
 
 @Composable
 private fun BrandMark() {

@@ -118,12 +118,12 @@ class ResolvyViewModel(
         replacePolicies((current.blockedDomains + domain).sorted(), onAccepted)
     }
 
-    fun removeDomain(domain: String) {
+    fun removeDomain(domain: String, onAccepted: () -> Unit) {
         if (!mutableState.value.canModifyPolicies) {
             mutableState.update { it.copy(error = "Refresh policies before making changes") }
             return
         }
-        replacePolicies(mutableState.value.blockedDomains - domain)
+        replacePolicies(mutableState.value.blockedDomains - domain, onAccepted)
     }
 
     fun editServer() {
