@@ -804,27 +804,12 @@ private const val WEALTH_OF_NATIONS_SOURCE =
 
 @Composable
 private fun BrandMark() {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(
-            modifier = Modifier
-                .size(30.dp)
-                .background(MaterialTheme.colorScheme.primary),
-            contentAlignment = Alignment.Center,
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(8.dp)
-                    .background(MaterialTheme.colorScheme.onPrimary),
-            )
-        }
-        Spacer(Modifier.width(10.dp))
-        Text(
-            "DEEP DIVE",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = androidx.compose.ui.unit.TextUnit.Unspecified,
-        )
-    }
+    Text(
+        "DEEP DIVE",
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = androidx.compose.ui.unit.TextUnit.Unspecified,
+    )
 }
 
 @Composable
