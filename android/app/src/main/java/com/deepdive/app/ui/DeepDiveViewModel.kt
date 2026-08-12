@@ -3,6 +3,7 @@ package com.deepdive.app.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.deepdive.app.data.BlockedDomain
 import com.deepdive.app.data.PolicyApi
 import com.deepdive.app.data.PolicyDocument
 import com.deepdive.app.data.ServerConfig
@@ -23,7 +24,7 @@ data class DeepDiveUiState(
     val editingServer: Boolean = false,
     val serverDraft: String = "",
     val tokenDraft: String = "",
-    val blockedDomains: List<String> = emptyList(),
+    val blockedDomains: List<BlockedDomain> = emptyList(),
     val revision: Long = 0,
     val policyLoaded: Boolean = false,
     val synced: Boolean = false,
@@ -37,6 +38,7 @@ data class DeepDiveUiState(
 class DeepDiveViewModel(
     private val settings: ServerSettings,
     private val policyApi: PolicyApi,
+    private val currentTimeMillis: () -> Long = System::currentTimeMillis,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(DeepDiveUiState())
     val state: StateFlow<DeepDiveUiState> = mutableState.asStateFlow()
@@ -111,11 +113,11 @@ class DeepDiveViewModel(
             mutableState.update { it.copy(error = "Refresh policies before making changes") }
             return
         }
-        if (domain in current.blockedDomains) {
+        if (current.blockedDomains.any { it.domain == domain }) {
             mutableState.update { it.copy(error = "$domain is already blocked") }
             return
         }
-        replacePolicies((current.blockedDomains + domain).sorted(), onAccepted)
+        replacePolicies((current.blockedDomains + BlockedDomain(domain)).sortedBy { it.domain }, onAccepted)
     }
 
     fun removeDomain(domain: String, onAccepted: () -> Unit) {
@@ -123,7 +125,27 @@ class DeepDiveViewModel(
             mutableState.update { it.copy(error = "Refresh policies before making changes") }
             return
         }
-        replacePolicies(mutableState.value.blockedDomains - domain, onAccepted)
+        replacePolicies(mutableState.value.blockedDomains.filterNot { it.domain == domain }, onAccepted)
+    }
+
+    fun temporarilyUnblock(domain: String, minutes: Int, onAccepted: () -> Unit) {
+        if (!mutableState.value.canModifyPolicies) {
+            mutableState.update { it.copy(error = "Refresh policies before making changes") }
+            return
+        }
+        if (minutes !in 1..MAX_TEMPORARY_UNBLOCK_MINUTES) {
+            mutableState.update { it.copy(error = "Choose a duration from 1 minute to 24 hours") }
+            return
+        }
+        if (mutableState.value.blockedDomains.none { it.domain == domain }) {
+            mutableState.update { it.copy(error = "$domain is not in the policy") }
+            return
+        }
+        val blockSince = currentTimeMillis() / 1_000 + minutes * 60L
+        val domains = mutableState.value.blockedDomains.map {
+            if (it.domain == domain) it.copy(blockSince = blockSince) else it
+        }
+        replacePolicies(domains, onAccepted)
     }
 
     fun editServer() {
@@ -147,7 +169,7 @@ class DeepDiveViewModel(
         mutableState.update { it.copy(error = null) }
     }
 
-    private fun replacePolicies(domains: List<String>, onSuccess: () -> Unit = {}) {
+    private fun replacePolicies(domains: List<BlockedDomain>, onSuccess: () -> Unit = {}) {
         val current = mutableState.value
         val config = current.config ?: return
         launchOperation {
@@ -191,5 +213,9 @@ class DeepDiveViewModel(
             require(modelClass.isAssignableFrom(DeepDiveViewModel::class.java))
             return DeepDiveViewModel(settings, policyApi) as T
         }
+    }
+
+    companion object {
+        const val MAX_TEMPORARY_UNBLOCK_MINUTES = 24 * 60
     }
 }

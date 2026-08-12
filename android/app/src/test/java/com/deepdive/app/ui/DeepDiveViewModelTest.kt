@@ -1,6 +1,7 @@
 package com.deepdive.app.ui
 
 import com.deepdive.app.data.PolicyApi
+import com.deepdive.app.data.BlockedDomain
 import com.deepdive.app.data.PolicyDocument
 import com.deepdive.app.data.ServerConfig
 import com.deepdive.app.data.ServerSettings
@@ -35,7 +36,7 @@ class DeepDiveViewModelTest {
     @Test
     fun connectTestsAndStoresServer() = runTest(dispatcher) {
         val settings = FakeSettings()
-        val api = FakePolicyApi(PolicyDocument(4, listOf("ads.example")))
+        val api = FakePolicyApi(PolicyDocument(4, listOf(BlockedDomain("ads.example"))))
         val viewModel = DeepDiveViewModel(settings, api)
 
         viewModel.updateServerDraft("resolver.example.com:8443")
@@ -44,7 +45,7 @@ class DeepDiveViewModelTest {
         advanceUntilIdle()
 
         assertEquals(ServerConfig("https://resolver.example.com:8443", "secret"), settings.config)
-        assertEquals(listOf("ads.example"), viewModel.state.value.blockedDomains)
+        assertEquals(listOf(BlockedDomain("ads.example")), viewModel.state.value.blockedDomains)
         assertEquals(4, viewModel.state.value.revision)
         assertFalse(viewModel.state.value.showServerSetup)
     }
@@ -53,15 +54,35 @@ class DeepDiveViewModelTest {
     fun addingDomainReplacesServerPolicy() = runTest(dispatcher) {
         val config = ServerConfig("https://resolver.example.com", "secret")
         val settings = FakeSettings(config)
-        val api = FakePolicyApi(PolicyDocument(2, listOf("ads.example")))
+        val api = FakePolicyApi(PolicyDocument(2, listOf(BlockedDomain("ads.example"))))
         val viewModel = DeepDiveViewModel(settings, api)
         advanceUntilIdle()
 
         viewModel.addDomain(" Tracker.Example. ") {}
         advanceUntilIdle()
 
-        assertEquals(listOf("ads.example", "tracker.example"), api.lastReplacement)
+        assertEquals(
+            listOf(BlockedDomain("ads.example"), BlockedDomain("tracker.example")),
+            api.lastReplacement,
+        )
         assertEquals(3, viewModel.state.value.revision)
+    }
+
+    @Test
+    fun temporarilyUnblockingDomainSendsFutureUnixTimestamp() = runTest(dispatcher) {
+        val config = ServerConfig("https://resolver.example.com", "secret")
+        val settings = FakeSettings(config)
+        val api = FakePolicyApi(PolicyDocument(2, listOf(BlockedDomain("ads.example"))))
+        val viewModel = DeepDiveViewModel(settings, api, currentTimeMillis = { 1_700_000_000_000 })
+        advanceUntilIdle()
+
+        viewModel.temporarilyUnblock("ads.example", 2) {}
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(BlockedDomain("ads.example", 1_700_000_120)),
+            api.lastReplacement,
+        )
     }
 
     @Test
@@ -93,7 +114,7 @@ private class FakePolicyApi(
     private val failGet: Boolean = false,
 ) : PolicyApi {
     private var document = initial
-    var lastReplacement: List<String>? = null
+    var lastReplacement: List<BlockedDomain>? = null
 
     override suspend fun get(config: ServerConfig): PolicyDocument {
         if (failGet) throw Exception("Server unavailable")
@@ -103,7 +124,7 @@ private class FakePolicyApi(
     override suspend fun replace(
         config: ServerConfig,
         revision: Long,
-        blockedDomains: List<String>,
+        blockedDomains: List<BlockedDomain>,
     ): PolicyDocument {
         lastReplacement = blockedDomains
         document = PolicyDocument(document.revision + 1, blockedDomains)

@@ -10,7 +10,12 @@ import javax.net.ssl.HttpsURLConnection
 
 data class PolicyDocument(
     val revision: Long,
-    val blockedDomains: List<String>,
+    val blockedDomains: List<BlockedDomain>,
+)
+
+data class BlockedDomain(
+    val domain: String,
+    val blockSince: Long = 0,
 )
 
 class PolicyApiException(message: String) : Exception(message)
@@ -20,7 +25,7 @@ interface PolicyApi {
     suspend fun replace(
         config: ServerConfig,
         revision: Long,
-        blockedDomains: List<String>,
+        blockedDomains: List<BlockedDomain>,
     ): PolicyDocument
 }
 
@@ -32,12 +37,9 @@ class HttpPolicyApi : PolicyApi {
     override suspend fun replace(
         config: ServerConfig,
         revision: Long,
-        blockedDomains: List<String>,
+        blockedDomains: List<BlockedDomain>,
     ): PolicyDocument = withContext(Dispatchers.IO) {
-        val body = JSONObject()
-            .put("revision", revision)
-            .put("blocked_domains", JSONArray(blockedDomains))
-            .toString()
+        val body = encodePolicyUpdate(revision, blockedDomains)
         execute(config, HttpURLConnection.HTTP_OK, "PUT", body)
     }
 
@@ -89,7 +91,13 @@ class HttpPolicyApi : PolicyApi {
             val domains = json.getJSONArray("blocked_domains")
             return PolicyDocument(
                 revision = json.getLong("revision"),
-                blockedDomains = List(domains.length()) { index -> domains.getString(index) },
+                blockedDomains = List(domains.length()) { index ->
+                    val domain = domains.getJSONObject(index)
+                    BlockedDomain(
+                        domain = domain.getString("domain"),
+                        blockSince = domain.getLong("block_since"),
+                    )
+                },
             )
         } catch (_: Exception) {
             throw PolicyApiException("The server returned an invalid policy response")
@@ -110,4 +118,19 @@ class HttpPolicyApi : PolicyApi {
         private const val CONNECT_TIMEOUT_MS = 10_000
         private const val READ_TIMEOUT_MS = 10_000
     }
+}
+
+internal fun encodePolicyUpdate(revision: Long, blockedDomains: List<BlockedDomain>): String {
+    val domains = JSONArray()
+    blockedDomains.forEach { domain ->
+        domains.put(
+            JSONObject()
+                .put("domain", domain.domain)
+                .put("block_since", domain.blockSince),
+        )
+    }
+    return JSONObject()
+        .put("revision", revision)
+        .put("blocked_domains", domains)
+        .toString()
 }

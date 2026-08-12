@@ -57,6 +57,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.deepdive.app.BuildConfig
+import com.deepdive.app.data.BlockedDomain
 import kotlinx.coroutines.delay
 import kotlin.random.Random
 
@@ -77,6 +79,7 @@ fun DeepDiveApp(state: DeepDiveUiState, viewModel: DeepDiveViewModel) {
                 state = state,
                 onAdd = viewModel::addDomain,
                 onRemove = viewModel::removeDomain,
+                onTemporaryUnblock = viewModel::temporarilyUnblock,
                 onRefresh = viewModel::refresh,
                 onEditServer = viewModel::editServer,
                 onDismissError = viewModel::clearError,
@@ -218,6 +221,7 @@ private fun PolicyScreen(
     state: DeepDiveUiState,
     onAdd: (String, () -> Unit) -> Unit,
     onRemove: (String, () -> Unit) -> Unit,
+    onTemporaryUnblock: (String, Int, () -> Unit) -> Unit,
     onRefresh: () -> Unit,
     onEditServer: () -> Unit,
     onDismissError: () -> Unit,
@@ -231,9 +235,15 @@ private fun PolicyScreen(
             domain = request.domain,
             task = request.task,
             onCancel = { removalRequest = null },
-            onComplete = {
-                removalRequest = null
+            onPermanentUnblock = {
                 onRemove(request.domain) {
+                    removalRequest = null
+                    taskAssignments = taskAssignments - request.domain
+                }
+            },
+            onTemporaryUnblock = { minutes ->
+                onTemporaryUnblock(request.domain, minutes) {
+                    removalRequest = null
                     taskAssignments = taskAssignments - request.domain
                 }
             },
@@ -347,11 +357,12 @@ private fun PolicyScreen(
                     bottom = 28.dp,
                 ),
             ) {
-                items(state.blockedDomains, key = { it }) { domain ->
+                items(state.blockedDomains, key = { it.domain }) { blockedDomain ->
                     DomainRow(
-                        domain = domain,
+                        blockedDomain = blockedDomain,
                         enabled = state.canModifyPolicies,
-                        onRemove = {
+                        onUnblock = {
+                            val domain = blockedDomain.domain
                             val taskIndex = taskAssignments[domain] ?: Random.nextInt(RemovalTask.entries.size)
                             taskAssignments = taskAssignments + (domain to taskIndex)
                             removalRequest = RemovalRequest(domain, RemovalTask.entries[taskIndex])
@@ -425,8 +436,10 @@ private fun RemovalChallenge(
     domain: String,
     task: RemovalTask,
     onCancel: () -> Unit,
-    onComplete: () -> Unit,
+    onPermanentUnblock: () -> Unit,
+    onTemporaryUnblock: (Int) -> Unit,
 ) {
+    var challengeSkipped by rememberSaveable(domain, task) { mutableStateOf(false) }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -457,12 +470,26 @@ private fun RemovalChallenge(
             )
             Spacer(Modifier.height(16.dp))
 
-            when (task) {
-                RemovalTask.Review -> PolicyReviewTask(domain, onComplete)
-                RemovalTask.Transcription -> TranscriptionTask(domain, onComplete)
-                RemovalTask.DomainEntries -> DomainEntryTask(domain, onComplete)
-                RemovalTask.ReverseConfirmation -> ReverseConfirmationTask(domain, onComplete)
-                RemovalTask.Filing -> FilingTask(domain, onComplete)
+            if (challengeSkipped) {
+                UnblockOptions(domain, onPermanentUnblock, onTemporaryUnblock)
+            } else {
+                when (task) {
+                    RemovalTask.Review -> PolicyReviewTask(domain, onPermanentUnblock, onTemporaryUnblock)
+                    RemovalTask.Transcription -> TranscriptionTask(domain, onPermanentUnblock, onTemporaryUnblock)
+                    RemovalTask.DomainEntries -> DomainEntryTask(domain, onPermanentUnblock, onTemporaryUnblock)
+                    RemovalTask.ReverseConfirmation -> ReverseConfirmationTask(domain, onPermanentUnblock, onTemporaryUnblock)
+                    RemovalTask.Filing -> FilingTask(domain, onPermanentUnblock, onTemporaryUnblock)
+                }
+            }
+
+            if (BuildConfig.DEBUG && !challengeSkipped) {
+                Spacer(Modifier.height(12.dp))
+                TextButton(
+                    onClick = { challengeSkipped = true },
+                    modifier = Modifier.align(Alignment.CenterHorizontally),
+                ) {
+                    Text("Developer: skip challenge")
+                }
             }
 
             Spacer(Modifier.height(18.dp))
@@ -477,7 +504,7 @@ private fun RemovalChallenge(
 }
 
 @Composable
-private fun PolicyReviewTask(domain: String, onComplete: () -> Unit) {
+private fun PolicyReviewTask(domain: String, onPermanentUnblock: () -> Unit, onTemporaryUnblock: (Int) -> Unit) {
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     var pageIndex by remember { mutableStateOf(0) }
     var readingSecondsRemaining by remember { mutableStateOf(REVIEW_PAGE_SECONDS) }
@@ -485,7 +512,7 @@ private fun PolicyReviewTask(domain: String, onComplete: () -> Unit) {
     var timerAttempt by remember { mutableStateOf(0) }
 
     if (pageIndex == balancedReviewPages.size) {
-        RemovalFinishButton(domain, onComplete)
+        UnblockOptions(domain, onPermanentUnblock, onTemporaryUnblock)
         return
     }
 
@@ -542,12 +569,12 @@ private fun PolicyReviewTask(domain: String, onComplete: () -> Unit) {
 }
 
 @Composable
-private fun TranscriptionTask(domain: String, onComplete: () -> Unit) {
+private fun TranscriptionTask(domain: String, onPermanentUnblock: () -> Unit, onTemporaryUnblock: (Int) -> Unit) {
     var excerptIndex by remember { mutableStateOf(0) }
     var transcription by remember { mutableStateOf("") }
 
     if (excerptIndex == removalTranscriptions.size) {
-        RemovalFinishButton(domain, onComplete)
+        UnblockOptions(domain, onPermanentUnblock, onTemporaryUnblock)
         return
     }
 
@@ -585,13 +612,13 @@ private fun TranscriptionTask(domain: String, onComplete: () -> Unit) {
 }
 
 @Composable
-private fun DomainEntryTask(domain: String, onComplete: () -> Unit) {
+private fun DomainEntryTask(domain: String, onPermanentUnblock: () -> Unit, onTemporaryUnblock: (Int) -> Unit) {
     val entriesRequired = remember(domain) { entriesForDomain(domain) }
     var entriesRecorded by remember { mutableStateOf(0) }
     var entry by remember { mutableStateOf("") }
 
     if (entriesRecorded == entriesRequired) {
-        RemovalFinishButton(domain, onComplete)
+        UnblockOptions(domain, onPermanentUnblock, onTemporaryUnblock)
         return
     }
 
@@ -632,14 +659,14 @@ private fun DomainEntryTask(domain: String, onComplete: () -> Unit) {
 }
 
 @Composable
-private fun ReverseConfirmationTask(domain: String, onComplete: () -> Unit) {
+private fun ReverseConfirmationTask(domain: String, onPermanentUnblock: () -> Unit, onTemporaryUnblock: (Int) -> Unit) {
     val entriesRequired = remember(domain) { entriesForDomain(domain) }
     var entriesRecorded by remember { mutableStateOf(0) }
     var entry by remember { mutableStateOf("") }
     val reversedDomain = domain.reversed()
 
     if (entriesRecorded == entriesRequired) {
-        RemovalFinishButton(domain, onComplete)
+        UnblockOptions(domain, onPermanentUnblock, onTemporaryUnblock)
         return
     }
 
@@ -684,7 +711,7 @@ private fun ReverseConfirmationTask(domain: String, onComplete: () -> Unit) {
 }
 
 @Composable
-private fun FilingTask(domain: String, onComplete: () -> Unit) {
+private fun FilingTask(domain: String, onPermanentUnblock: () -> Unit, onTemporaryUnblock: (Int) -> Unit) {
     val filingRecords = remember(domain) {
         mutableStateListOf<String>().apply {
             addAll(removalFilingRecords.take(20).shuffled(Random(domain.hashCode())))
@@ -715,18 +742,37 @@ private fun FilingTask(domain: String, onComplete: () -> Unit) {
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
     }
-    if (filingRecords.isEmpty()) RemovalFinishButton(domain, onComplete)
+    if (filingRecords.isEmpty()) UnblockOptions(domain, onPermanentUnblock, onTemporaryUnblock)
 }
 
 @Composable
-private fun RemovalFinishButton(domain: String, onComplete: () -> Unit) {
+private fun UnblockOptions(
+    domain: String,
+    onPermanentUnblock: () -> Unit,
+    onTemporaryUnblock: (Int) -> Unit,
+) {
     Spacer(Modifier.height(20.dp))
-    Button(
-        onClick = onComplete,
+    Text("Challenge complete", style = MaterialTheme.typography.titleLarge)
+    Spacer(Modifier.height(8.dp))
+    Text(
+        "Choose how long $domain should remain unblocked.",
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(16.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(onClick = { onTemporaryUnblock(2) }, modifier = Modifier.weight(1f)) {
+            Text("2 minutes")
+        }
+        Button(onClick = { onTemporaryUnblock(3) }, modifier = Modifier.weight(1f)) {
+            Text("3 minutes")
+        }
+    }
+    Spacer(Modifier.height(8.dp))
+    TextButton(
+        onClick = onPermanentUnblock,
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(2.dp),
     ) {
-        Text("Remove $domain")
+        Text("Unblock permanently", color = MaterialTheme.colorScheme.error)
     }
 }
 
@@ -843,7 +889,21 @@ private fun StatusBadge(revision: Long, synced: Boolean) {
 }
 
 @Composable
-private fun DomainRow(domain: String, enabled: Boolean, onRemove: () -> Unit) {
+private fun DomainRow(
+    blockedDomain: BlockedDomain,
+    enabled: Boolean,
+    onUnblock: () -> Unit,
+) {
+    var currentEpochSeconds by remember(blockedDomain.blockSince) {
+        mutableStateOf(System.currentTimeMillis() / 1_000)
+    }
+    LaunchedEffect(blockedDomain.blockSince) {
+        while (blockedDomain.blockSince > currentEpochSeconds) {
+            delay(1_000)
+            currentEpochSeconds = System.currentTimeMillis() / 1_000
+        }
+    }
+    val remainingSeconds = (blockedDomain.blockSince - currentEpochSeconds).coerceAtLeast(0)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -860,17 +920,41 @@ private fun DomainRow(domain: String, enabled: Boolean, onRemove: () -> Unit) {
             Text("X", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
         }
         Spacer(Modifier.width(13.dp))
-        Text(
-            text = domain,
-            modifier = Modifier.weight(1f),
-            style = MaterialTheme.typography.bodyLarge,
-            fontFamily = FontFamily.Monospace,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        TextButton(onClick = onRemove, enabled = enabled) {
-            Text("Remove", color = if (enabled) MaterialTheme.colorScheme.error else Color.Unspecified)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = blockedDomain.domain,
+                style = MaterialTheme.typography.bodyLarge,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (remainingSeconds > 0) {
+                Text(
+                    "Unblocked, blocks again in ${formatRemainingTime(remainingSeconds)}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            } else {
+                Text(
+                    "Blocked",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
+        TextButton(onClick = onUnblock, enabled = enabled) { Text("Unblock") }
+    }
+}
+
+private fun formatRemainingTime(seconds: Long): String {
+    val minutes = seconds / 60
+    val remainder = seconds % 60
+    return if (minutes >= 60) {
+        val hours = minutes / 60
+        val minuteRemainder = minutes % 60
+        "${hours}h ${minuteRemainder}m"
+    } else {
+        "%d:%02d".format(minutes, remainder)
     }
 }
 
