@@ -12,6 +12,7 @@ import (
 func main() {
 	host := flag.String("server", "127.0.0.1:5356", "DNS server address")
 	tcpTLS := flag.Bool("tcp-tls", false, "Use DNS over TLS")
+	domain := flag.String("domain", "blog.dnsimple.com", "Domain name to resolve")
 	flag.Parse()
 
 	m := new(dns.Msg)
@@ -34,9 +35,7 @@ func main() {
 	}
 
 	m = new(dns.Msg)
-	name := "blog.dnsimple.com"
-	m.SetQuestion(dns.Fqdn(name), dns.TypeA)
-	// m.RecursionDesired = false
+	m.SetQuestion(dns.Fqdn(*domain), dns.TypeA)
 
 	d, _, err := c.Exchange(m, serverAddr)
 	if err != nil {

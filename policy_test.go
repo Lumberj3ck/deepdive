@@ -14,7 +14,7 @@ import (
 
 func TestDomainPolicyBlocksDomainAndSubdomains(t *testing.T) {
 	policy := newTestDomainPolicy(t)
-	if _, err := policy.Replace([]string{"Example.COM.", "example.com"}, 0); err != nil {
+	if _, err := policy.Replace([]BlockedDomain{{Domain: "Example.COM."}}, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -31,7 +31,7 @@ func TestDomainPolicyBlocksDomainAndSubdomains(t *testing.T) {
 	if snapshot.Revision != 1 {
 		t.Fatalf("revision = %d, want 1", snapshot.Revision)
 	}
-	if len(snapshot.BlockedDomains) != 1 || snapshot.BlockedDomains[0] != "example.com" {
+	if len(snapshot.BlockedDomains) != 1 || snapshot.BlockedDomains[0].Domain != "example.com" {
 		t.Fatalf("blocked domains = %#v, want [example.com]", snapshot.BlockedDomains)
 	}
 }
@@ -39,7 +39,7 @@ func TestDomainPolicyBlocksDomainAndSubdomains(t *testing.T) {
 func TestDomainPolicyPersists(t *testing.T) {
 	t.Chdir(t.TempDir())
 	policy := openTestDomainPolicy(t)
-	if _, err := policy.Replace([]string{"blocked.example"}, 0); err != nil {
+	if _, err := policy.Replace([]BlockedDomain{{Domain: "blocked.example"}}, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -71,7 +71,7 @@ func TestPolicyHandlerReplacesAndReadsBlocklist(t *testing.T) {
 	policy := newTestDomainPolicy(t)
 	handler := newPolicyHandler(policy, "secret")
 
-	put := httptest.NewRequest(http.MethodPut, policyAPIPath, strings.NewReader(`{"revision":0,"blocked_domains":["B.example.","a.example"]}`))
+	put := httptest.NewRequest(http.MethodPut, policyAPIPath, strings.NewReader(`{"revision":0,"blocked_domains":[{"domain":"B.example."},{"domain":"a.example"}]}`))
 	put.Header.Set("Authorization", "Bearer secret")
 	putResponse := httptest.NewRecorder()
 	handler.ServeHTTP(putResponse, put)
@@ -90,8 +90,25 @@ func TestPolicyHandlerReplacesAndReadsBlocklist(t *testing.T) {
 	if err := json.NewDecoder(getResponse.Body).Decode(&document); err != nil {
 		t.Fatal(err)
 	}
-	if document.Revision != 1 || strings.Join(document.BlockedDomains, ",") != "a.example,b.example" {
+	if document.Revision != 1 || len(document.BlockedDomains) != 2 || document.BlockedDomains[0].Domain != "a.example" || document.BlockedDomains[1].Domain != "b.example" {
 		t.Fatalf("unexpected policy document: %#v", document)
+	}
+}
+
+func TestPolicyHandlerRejectsDuplicateDomains(t *testing.T) {
+	policy := newTestDomainPolicy(t)
+	handler := newPolicyHandler(policy, "secret")
+	request := httptest.NewRequest(http.MethodPut, policyAPIPath, strings.NewReader(`{"revision":0,"blocked_domains":[{"domain":"Example.COM."},{"domain":"example.com"}]}`))
+	request.Header.Set("Authorization", "Bearer secret")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("PUT status = %d, want %d: %s", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+	if policy.Snapshot().Revision != 0 {
+		t.Fatal("duplicate domains changed the policy")
 	}
 }
 
@@ -100,7 +117,7 @@ func TestPolicyHandlerRejectsStaleRevision(t *testing.T) {
 	handler := newPolicyHandler(policy, "secret")
 
 	for requestNumber, wantStatus := range []int{http.StatusOK, http.StatusConflict} {
-		request := httptest.NewRequest(http.MethodPut, policyAPIPath, strings.NewReader(`{"revision":0,"blocked_domains":["blocked.example"]}`))
+		request := httptest.NewRequest(http.MethodPut, policyAPIPath, strings.NewReader(`{"revision":0,"blocked_domains":[{"domain":"blocked.example"}]}`))
 		request.Header.Set("Authorization", "Bearer secret")
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
@@ -112,7 +129,7 @@ func TestPolicyHandlerRejectsStaleRevision(t *testing.T) {
 
 func TestResolverReturnsCacheableNXDOMAINForBlockedDomain(t *testing.T) {
 	policy := newTestDomainPolicy(t)
-	if _, err := policy.Replace([]string{"blocked.example"}, 0); err != nil {
+	if _, err := policy.Replace([]BlockedDomain{{Domain: "blocked.example"}}, 0); err != nil {
 		t.Fatal(err)
 	}
 	resolver := &Resolver{History: NewRequestHistory(10), DomainPolicy: policy}
@@ -147,10 +164,10 @@ func TestResolverReturnsCacheableNXDOMAINForBlockedDomain(t *testing.T) {
 
 func TestDomainPolicyRejectsStaleRevision(t *testing.T) {
 	policy := newTestDomainPolicy(t)
-	if _, err := policy.Replace([]string{"first.example"}, 0); err != nil {
+	if _, err := policy.Replace([]BlockedDomain{{Domain: "first.example"}}, 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := policy.Replace([]string{"stale.example"}, 0); !errors.Is(err, errPolicyRevisionConflict) {
+	if _, err := policy.Replace([]BlockedDomain{{Domain: "stale.example"}}, 0); !errors.Is(err, errPolicyRevisionConflict) {
 		t.Fatalf("replace error = %v, want revision conflict", err)
 	}
 	if policy.IsAllowed("first.example") {
