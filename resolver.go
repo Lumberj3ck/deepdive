@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"flag"
@@ -60,12 +61,14 @@ type Resolver struct {
 	Cache        *Cache
 	History      *RequestHistory
 	DomainPolicy *DomainPolicy
+	queryFn      func(context.Context, dns.Question, string) (*dns.Msg, error)
 }
 
 const (
 	retries               = 2
 	maxReferralIterations = 64
 	maxResolveDepth       = 16
+	maxParallelQueries    = 4
 	blockedResponseTTL    = 60
 )
 
@@ -75,7 +78,7 @@ var serverNoRespErr = fmt.Errorf("Server didn't respond after %d retries ", retr
 const udpNet = "udp"
 const tcpNet = "tcp"
 
-func (r *Resolver) queryQ(q dns.Question, server string, net string) (*dns.Msg, error) {
+func (r *Resolver) queryQ(ctx context.Context, q dns.Question, server string, net string) (*dns.Msg, error) {
 	msg := new(dns.Msg)
 	c := new(dns.Client)
 	c.Net = net
@@ -87,8 +90,11 @@ func (r *Resolver) queryQ(q dns.Question, server string, net string) (*dns.Msg, 
 	if net == udpNet {
 		msg.SetEdns0(1232, false)
 		for range retries {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			started := time.Now()
-			resp, _, err := c.Exchange(msg, server+":53")
+			resp, err := exchangeDNS(ctx, c, msg, server+":53")
 			r.recordRequest("upstream", net, server, q, responseResult(resp, err), time.Since(started))
 
 			if err != nil {
@@ -104,12 +110,29 @@ func (r *Resolver) queryQ(q dns.Question, server string, net string) (*dns.Msg, 
 		}
 	} else {
 		started := time.Now()
-		resp, _, err := c.Exchange(msg, server+":53")
+		resp, err := exchangeDNS(ctx, c, msg, server+":53")
 		r.recordRequest("upstream", net, server, q, responseResult(resp, err), time.Since(started))
 		return resp, err
 	}
 
 	return &dns.Msg{}, serverNoRespErr
+}
+
+func exchangeDNS(ctx context.Context, client *dns.Client, msg *dns.Msg, address string) (*dns.Msg, error) {
+	conn, err := client.DialContext(ctx, address)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	stopCancel := context.AfterFunc(ctx, func() {
+		// ExchangeWithConnContext only applies deadlines; closing interrupts an active read immediately.
+		_ = conn.Close()
+	})
+	defer stopCancel()
+
+	resp, _, err := client.ExchangeWithConnContext(ctx, msg, conn)
+	return resp, err
 }
 
 func (r *Resolver) recordRequest(direction, network, peer string, q dns.Question, result string, duration time.Duration) {
@@ -434,12 +457,16 @@ func (r *Resolver) GetNextServer(zone string, servers map[string]NS_RR, visited 
 	return nil, "", ErrNoNsRefferences
 }
 
-func (r *Resolver) queryQWithRetry(q dns.Question, serverIP string) (*dns.Msg, error) {
-	resp, err := r.queryQ(q, serverIP, udpNet)
+func (r *Resolver) queryQWithRetry(ctx context.Context, q dns.Question, serverIP string) (*dns.Msg, error) {
+	if r.queryFn != nil {
+		return r.queryFn(ctx, q, serverIP)
+	}
+
+	resp, err := r.queryQ(ctx, q, serverIP, udpNet)
 	r.logger.Info("Received after udp", "err", err)
 
 	if errors.Is(err, dataTruncatedErr) || errors.Is(err, serverNoRespErr) {
-		resp, err = r.queryQ(q, serverIP, tcpNet)
+		resp, err = r.queryQ(ctx, q, serverIP, tcpNet)
 
 		if err != nil {
 			// Grab next nameserver refference if available
@@ -449,7 +476,63 @@ func (r *Resolver) queryQWithRetry(q dns.Question, serverIP string) (*dns.Msg, e
 	return resp, err
 }
 
+type nameServerEndpoint struct {
+	name string
+	ip   net.IP
+}
+
+type nameServerQueryResult struct {
+	name string
+	resp *dns.Msg
+	err  error
+}
+
+func (r *Resolver) queryNameServers(ctx context.Context, q dns.Question, endpoints []nameServerEndpoint) (<-chan nameServerQueryResult, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(ctx)
+	results := make(chan nameServerQueryResult, len(endpoints))
+	jobs := make(chan nameServerEndpoint, len(endpoints))
+	for _, endpoint := range endpoints {
+		jobs <- endpoint
+	}
+	close(jobs)
+
+	workerCount := min(len(endpoints), maxParallelQueries)
+	var workers sync.WaitGroup
+	workers.Add(workerCount)
+	for range workerCount {
+		go func() {
+			defer workers.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case endpoint, ok := <-jobs:
+					if !ok {
+						return
+					}
+					resp, err := r.queryQWithRetry(ctx, q, endpoint.ip.String())
+					select {
+					case results <- nameServerQueryResult{name: endpoint.name, resp: resp, err: err}:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
+		}()
+	}
+
+	go func() {
+		workers.Wait()
+		close(results)
+	}()
+	return results, cancel
+}
+
 func (r *Resolver) handleRefferences(q dns.Question, depth int) (*dns.Msg, error) {
+	return r.handleRefferencesContext(context.Background(), q, depth)
+}
+
+func (r *Resolver) handleRefferencesContext(ctx context.Context, q dns.Question, depth int) (*dns.Msg, error) {
 	zone := r.Cache.getClosestZone(q.Name)
 
 	if zone == "." {
@@ -461,149 +544,177 @@ func (r *Resolver) handleRefferences(q dns.Question, depth int) (*dns.Msg, error
 	servers, _ := r.Cache.GetZoneRR(zone)
 
 	for range maxReferralIterations {
-		// it will try to resolve one, if can't it will try to resolve next
-		serverIP, nsReff, err := r.GetNextServer(zone, servers, visited)
-
-		if err == ErrNoNsRefferences {
-			return nil, fmt.Errorf("Failed to resolve NS refferences")
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 
-		if err == ErrNoKnownNsEndpoint {
-			// against circular nsreff, happens when cache expires and resolver is inside of
-			// inbailiwick zone, get rid of zone cache and get glue again from parent
-			if dns.IsSubDomain(dns.CanonicalName(zone), dns.CanonicalName(nsReff)) {
-				if !r.Cache.removeZoneIfNoEndpoints(zone) {
-					visited[nsReff] = true
-					servers, _ = r.Cache.GetZoneRR(zone)
-					continue
-				}
+		endpoints := make([]nameServerEndpoint, 0, len(servers))
+		unresolved := make([]string, 0, len(servers))
+		for name, server := range servers {
+			if visited[name] {
+				continue
 			}
-			// or AAAA
-			resp, err := r.resolveQ(dns.Question{Name: nsReff, Qtype: dns.TypeA, Qclass: dns.ClassINET}, depth+1)
+			if server.ip == nil {
+				unresolved = append(unresolved, name)
+				continue
+			}
+			visited[name] = true
+			endpoints = append(endpoints, nameServerEndpoint{name: name, ip: append(net.IP(nil), server.ip...)})
+		}
+
+		if len(endpoints) == 0 {
+			if len(unresolved) == 0 {
+				return nil, fmt.Errorf("Failed to resolve NS refferences")
+			}
+
+			nsName := unresolved[0]
+			// Break circular in-bailiwick lookups by forcing the address lookup through the parent zone.
+			// for example cache:
+			// zone cvut.cz 
+			// ns 	ns.cvut.cz 
+			// ip 	none
+			// Try to resolve cvut.cz, figure that we need to resolve ns.cvut.cz, it is fine up to moment
+			// when they have shared cache and ns.cvut.cz tries to ask closest zone which is again cvut.cz
+			if dns.IsSubDomain(dns.CanonicalName(zone), dns.CanonicalName(nsName)) && !r.Cache.removeZoneIfNoEndpoints(zone) {
+				visited[nsName] = true
+				servers, _ = r.Cache.GetZoneRR(zone)
+				continue
+			}
+
+			resp, err := r.resolveQContext(ctx, dns.Question{Name: nsName, Qtype: dns.TypeA, Qclass: dns.ClassINET}, depth+1)
 			if err != nil {
-				r.logger.Warn("Got err during resolve of NS: ", "err", err)
-				visited[nsReff] = true
+				r.logger.Warn("Got err during resolve of NS: ", "ns", nsName, "err", err)
+				visited[nsName] = true
+				continue
+			}
+			if resp == nil {
+				visited[nsName] = true
 				continue
 			}
 
 			for _, rr := range resp.Answer {
-				// or AAAA
-				if rr, ok := rr.(*dns.A); ok {
-					s := servers[nsReff]
-					s.ip = append(net.IP(nil), rr.A...)
-					s.ipExpiresAt = time.Now().Unix() + int64(rr.Hdr.Ttl)
-
-					servers[nsReff] = s
-					r.Cache.updateNsAddress(zone, nsReff, rr.A, rr.Hdr.Ttl)
+				a, ok := rr.(*dns.A)
+				if !ok {
+					continue
 				}
+				server := servers[nsName]
+				server.ip = append(net.IP(nil), a.A...)
+				server.ipExpiresAt = time.Now().Unix() + int64(a.Hdr.Ttl)
+				servers[nsName] = server
+				r.Cache.updateNsAddress(zone, nsName, a.A, a.Hdr.Ttl)
 			}
-			serverIP = servers[nsReff].ip
-			// if receive CNAME without final answer or AAAA which is not supported yet.
-			if serverIP == nil {
-				visited[nsReff] = true
-				continue
+			if servers[nsName].ip == nil {
+				visited[nsName] = true
 			}
-		}
-
-		visited[nsReff] = true
-		resp, err := r.queryQWithRetry(q, serverIP.String())
-
-		if err != nil {
-			r.logger.Info("Skipping server, because of the err", "serverIP", serverIP)
 			continue
 		}
-		if resp.Rcode == dns.RcodeNameError {
-			return resp, nil
-		}
 
-		if len(resp.Answer) > 0 {
-			r.logger.Debug("Found response answer", "resp", resp)
-			return resp, nil
-		}
+		results, cancel := r.queryNameServers(ctx, q, endpoints)
+		for result := range results {
+			if result.err != nil {
+				if !errors.Is(result.err, context.Canceled) {
+					r.logger.Info("Skipping server, because of the err", "server", result.name, "err", result.err)
+				}
+				continue
+			}
+			resp := result.resp
+			if resp == nil {
+				continue
+			}
+			if resp.Rcode == dns.RcodeNameError && resp.Authoritative {
+				cancel()
+				return resp, nil
+			}
 
-		// nodata, name exists, however not such RR type available
-		if resp.Rcode == dns.RcodeSuccess && len(resp.Answer) == 0 && resp.Authoritative && containsSoa(resp.Ns) {
-			return resp, nil
-		}
+			if resp.Rcode == dns.RcodeSuccess && len(resp.Answer) > 0 {
+				r.logger.Debug("Found response answer", "resp", resp)
+				cancel()
+				return resp, nil
+			}
 
-		gluedRefferences := map[string]NS_RR{}
-		if len(resp.Extra) > 0 {
+			// NODATA means the name exists, but the requested record type does not.
+			if resp.Rcode == dns.RcodeSuccess && resp.Authoritative && containsSoa(resp.Ns) {
+				cancel()
+				return resp, nil
+			}
+
+			gluedRefferences := map[string]NS_RR{}
 			for _, extr := range resp.Extra {
-				// or AAAA
-				extra_rr, ok := extr.(*dns.A)
+				extraRR, ok := extr.(*dns.A)
 				if !ok {
 					continue
 				}
 
 				extraName := dns.CanonicalName(extr.Header().Name)
 				for _, rr := range resp.Ns {
-					rr, ok := rr.(*dns.NS)
+					nsRR, ok := rr.(*dns.NS)
 					if !ok {
 						continue
 					}
 
-					nsName := dns.CanonicalName(rr.Ns)
-					zoneName := dns.CanonicalName(rr.Hdr.Name)
+					nsName := dns.CanonicalName(nsRR.Ns)
+					zoneName := dns.CanonicalName(nsRR.Hdr.Name)
 					if nsName == extraName {
-						ns := *rr
+						ns := *nsRR
 						ns.Hdr.Name = zoneName
 						ns.Ns = nsName
 						gluedRefferences[nsName] = NS_RR{
 							NS:          ns,
-							ip:          append(net.IP(nil), extra_rr.A...),
-							ipExpiresAt: time.Now().Unix() + int64(extra_rr.Hdr.Ttl),
+							ip:          append(net.IP(nil), extraRR.A...),
+							ipExpiresAt: time.Now().Unix() + int64(extraRR.Hdr.Ttl),
 						}
 					}
 				}
 			}
-		}
 
-		if len(resp.Ns) > 0 {
 			for _, rr := range resp.Ns {
-				rr, ok := rr.(*dns.NS)
+				nsRR, ok := rr.(*dns.NS)
 				if !ok {
 					continue
 				}
 
-				zoneName := dns.CanonicalName(rr.Header().Name)
-				nsName := dns.CanonicalName(rr.Ns)
-				cachedNsRR, rr_exists := r.Cache.GetNsRR(zoneName, nsName)
-				if rr_exists && cachedNsRR.ip != nil {
+				zoneName := dns.CanonicalName(nsRR.Header().Name)
+				nsName := dns.CanonicalName(nsRR.Ns)
+				cachedNsRR, exists := r.Cache.GetNsRR(zoneName, nsName)
+				// maybe update it
+				if exists && cachedNsRR.ip != nil {
 					continue
 				}
 
-				var nsRR NS_RR
-				if _, ok := gluedRefferences[nsName]; ok {
-					nsRR = gluedRefferences[nsName]
-				} else {
-					ns := *rr
+				cached := gluedRefferences[nsName]
+				if cached.Ns == "" {
+					ns := *nsRR
 					ns.Hdr.Name = zoneName
 					ns.Ns = nsName
-					nsRR = NS_RR{NS: ns}
+					cached = NS_RR{NS: ns}
 				}
-
-				r.Cache.PushRREntry(zoneName, nsName, nsRR)
+				r.Cache.PushRREntry(zoneName, nsName, cached)
 			}
-		}
 
-		nextZone := r.Cache.getClosestZone(q.Name)
-		// the same ns server might be responsible for two different zones.
-		// ask for sub.example.com from .com
-		// receive ns1.net
-		// ask sub.example.com  from ns1.net
-		// receive ns1.net
-		// can't receive answer because ns1.net is in visited. (Defence against broken dns configuration)
-		if nextZone != zone {
-			visited = make(map[string]bool)
+			nextZone := r.Cache.getClosestZone(q.Name)
+			// figured that nextZone is not current, meaning that cache should be released
+			if nextZone != zone {
+				// Nameservers may legitimately serve both parent and child zones.
+				visited = make(map[string]bool)
+				zone = nextZone
+				servers, _ = r.Cache.GetZoneRR(zone)
+				cancel()
+				break
+			}
+			// if the same server manages parrent and child keep cache and only update servers
+			servers, _ = r.Cache.GetZoneRR(zone)
 		}
-		zone = nextZone
-		servers, _ = r.Cache.GetZoneRR(zone)
+		cancel()
 	}
 
 	return nil, ErrReferralLimitExceeded
 }
 
 func (r *Resolver) resolveQ(q dns.Question, depth int) (*dns.Msg, error) {
+	return r.resolveQContext(context.Background(), q, depth)
+}
+
+func (r *Resolver) resolveQContext(ctx context.Context, q dns.Question, depth int) (*dns.Msg, error) {
 	if depth >= maxResolveDepth {
 		return nil, ErrResolveDepthExceeded
 	}
@@ -611,7 +722,10 @@ func (r *Resolver) resolveQ(q dns.Question, depth int) (*dns.Msg, error) {
 	answer := make([]dns.RR, 0, 10)
 	visitedAliases := make(map[string]bool)
 	for range 20 {
-		resp, err := r.handleRefferences(q, depth)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		resp, err := r.handleRefferencesContext(ctx, q, depth)
 
 		if err != nil {
 			return nil, err

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -169,6 +170,135 @@ func TestCacheExpiresDelegationAndAddressSeparately(t *testing.T) {
 	}
 	if rr.ip != nil {
 		t.Fatal("expired nameserver address remained cached")
+	}
+}
+
+func TestHandleReferencesQueriesNameServersInParallel(t *testing.T) {
+	cache := NewCache()
+	cache.PushZoneEntry("example.", map[string]NS_RR{
+		"ns1.example.": {
+			ip: net.ParseIP("192.0.2.1"),
+			NS: dns.NS{Hdr: dns.RR_Header{Name: "example.", Rrtype: dns.TypeNS, Class: dns.ClassINET}, Ns: "ns1.example."},
+		},
+		"ns2.example.": {
+			ip: net.ParseIP("192.0.2.2"),
+			NS: dns.NS{Hdr: dns.RR_Header{Name: "example.", Rrtype: dns.TypeNS, Class: dns.ClassINET}, Ns: "ns2.example."},
+		},
+		"ns3.example.": {
+			ip: net.ParseIP("192.0.2.3"),
+			NS: dns.NS{Hdr: dns.RR_Header{Name: "example.", Rrtype: dns.TypeNS, Class: dns.ClassINET}, Ns: "ns3.example."},
+		},
+	})
+
+	started := make(chan struct{}, 3)
+	release := make(chan struct{})
+	canceled := make(chan struct{}, 1)
+	resolver := &Resolver{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Cache:  cache,
+		queryFn: func(ctx context.Context, q dns.Question, server string) (*dns.Msg, error) {
+			started <- struct{}{}
+			<-release
+
+			resp := new(dns.Msg)
+			if server == "192.0.2.1" {
+				resp.Rcode = dns.RcodeNameError
+				return resp, nil
+			}
+			if server == "192.0.2.3" {
+				<-ctx.Done()
+				canceled <- struct{}{}
+				return nil, ctx.Err()
+			}
+			resp.Rcode = dns.RcodeSuccess
+			resp.Answer = []dns.RR{&dns.A{
+				Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+				A:   net.ParseIP("203.0.113.10").To4(),
+			}}
+			return resp, nil
+		},
+	}
+
+	type resolveResult struct {
+		resp *dns.Msg
+		err  error
+	}
+	resolved := make(chan resolveResult, 1)
+	go func() {
+		resp, err := resolver.handleRefferences(NewQuestion("www.example.", dns.TypeA), 0)
+		resolved <- resolveResult{resp: resp, err: err}
+	}()
+
+	for range 3 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("nameserver queries did not run concurrently")
+		}
+	}
+	close(release)
+
+	select {
+	case result := <-resolved:
+		if result.err != nil {
+			t.Fatalf("resolve error = %v", result.err)
+		}
+		if len(result.resp.Answer) != 1 {
+			t.Fatalf("answer count = %d, want 1", len(result.resp.Answer))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("parallel resolve did not complete")
+	}
+
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("losing nameserver query was not canceled")
+	}
+}
+
+func TestExchangeDNSCancellationClosesConnection(t *testing.T) {
+	server, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	received := make(chan struct{})
+	stopServer := make(chan struct{})
+	defer close(stopServer)
+	go func() {
+		buf := make([]byte, 512)
+		if _, _, err := server.ReadFrom(buf); err != nil {
+			return
+		}
+		close(received)
+		<-stopServer
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		msg := new(dns.Msg)
+		msg.SetQuestion("example.", dns.TypeA)
+		_, err := exchangeDNS(ctx, &dns.Client{Net: udpNet, Timeout: 5 * time.Second}, msg, server.LocalAddr().String())
+		result <- err
+	}()
+
+	select {
+	case <-received:
+	case <-time.After(time.Second):
+		t.Fatal("test DNS server did not receive the query")
+	}
+	cancel()
+
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("canceled DNS exchange returned no error")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled DNS exchange remained blocked")
 	}
 }
 
