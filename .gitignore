@@ -1,5 +1,6 @@
 /deepdive
 .idea
+data
 
 # Android
 android/.gradle/

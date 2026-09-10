@@ -3,27 +3,57 @@ package main
 import (
 	"crypto/tls"
 	"flag"
-	"log"
+	"log/slog"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/miekg/dns"
 )
 
+func handleExchange(c *dns.Client, domain string, serverAddr string){
+	m := new(dns.Msg)
+	m.SetQuestion(dns.Fqdn(domain), dns.TypeA)
+	d, _, err := c.Exchange(m, serverAddr)
+	slog.Info("msg is", "msg", m)
+
+	if err != nil {
+		slog.Warn("err during dns exchange: ", "err", err)
+		return
+	}
+
+	slog.Info("Response ", "answer", d.Answer, "RR amount", len(d.Answer))
+	if d.Truncated {
+		c.Net = "tcp"
+		d, _, err := c.Exchange(m, serverAddr)
+
+		if err != nil {
+			slog.Warn("err during dns exchange: ", "err", err)
+		}
+		slog.Info("Response ", "answer", d.Answer)
+	}
+}
+
 func main() {
 	host := flag.String("server", "127.0.0.1:5356", "DNS server address")
 	tcpTLS := flag.Bool("tcp-tls", false, "Use DNS over TLS")
-	domain := flag.String("domain", "blog.dnsimple.com", "Domain name to resolve")
+	reqAmount := flag.Int("req", 1, "Amount of requests to make")
+	workers := flag.Int("work", 1, "Amount of parallel workers")
 	flag.Parse()
 
-	m := new(dns.Msg)
+	if *workers > 100 {
+		*workers = 100
+		slog.Info("Restricted parallel workers to ", "workers", workers)
+	}  
+
 	serverAddr := *host
-	log.Println("BIND", *host)
+	slog.Info("Bind ", "host", *host)
 
 	c := new(dns.Client)
 	if *tcpTLS {
 		serverName := strings.Split(*host, ":")
 		if len(serverName) < 2 {
-			log.Println("Expected host in host:port format")
+			slog.Warn("Expected host in host:port format")
 			return
 		}
 
@@ -34,26 +64,30 @@ func main() {
 		}
 	}
 
-	m = new(dns.Msg)
-	m.SetQuestion(dns.Fqdn(*domain), dns.TypeA)
-
-	d, _, err := c.Exchange(m, serverAddr)
-	if err != nil {
-		log.Fatalf("err during dns exchange: %v", err)
-	}
-
-	log.Println(d)
-	log.Println(d.Answer, len(d.Answer))
-	log.Println("Is Truncated: ", d.Truncated)
-	if d.Truncated {
-		c.Net = "tcp"
-		d, _, err := c.Exchange(m, serverAddr)
-
-		if err != nil {
-			log.Fatalf("err during dns exchange: %v", err)
+	tasks := make(chan string)
+	var wg sync.WaitGroup
+	go func() {
+		for range *reqAmount{
+			tasks <- "google.com"
 		}
+	}()
 
-		log.Println(d)
-		log.Println(d.Answer, len(d.Answer))
+	for i := range *workers{
+		wg.Add(1)
+		go func (id int)  {
+			for{
+				select {
+				case t := <-tasks:
+					slog.Info("Worker makes request", "id", id)
+					handleExchange(c, t, serverAddr)
+				case <-time.After(time.Second):
+					slog.Info("Stopping worker ", "id", id)
+					wg.Done()
+					return
+				}
+			}
+		}(i)
 	}
+
+	wg.Wait()
 }
