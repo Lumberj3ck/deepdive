@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -111,6 +112,40 @@ func TestPolicyHandlerRejectsDuplicateDomains(t *testing.T) {
 		t.Fatal("duplicate domains changed the policy")
 	}
 }
+
+func TestConcurentRequestsRejected(t *testing.T){
+	policy := newTestDomainPolicy(t)
+	handler := newPolicyHandler(policy, "secret")
+	var writers []*httptest.ResponseRecorder
+	var wg sync.WaitGroup
+
+	for range 2{
+		wg.Add(1)
+		writer := httptest.NewRecorder()
+		writers = append(writers, writer)
+
+		req := httptest.NewRequest(http.MethodPut, policyAPIPath,
+		strings.NewReader(`{"revision":0,"blocked_domains":[{"domain":"example.com.", "block_since": 1788277519}]}`),
+		)
+		req.Header.Set("Authorization", "Bearer secret")
+
+		go func(){
+			handler.ServeHTTP(writer, req)
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+	
+	for _, writer := range writers{
+		resp := writer.Result()
+		if resp.StatusCode == http.StatusConflict {
+			return
+		}
+	}
+
+	t.Fatal("One of the concurent requests must fail")
+}
+
 
 func TestPolicyHandlerRejectsStaleRevision(t *testing.T) {
 	policy := newTestDomainPolicy(t)
