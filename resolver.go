@@ -65,6 +65,7 @@ const (
 	maxResolveDepth       = 16
 	maxParallelQueries    = 4
 	blockedResponseTTL    = 60
+	maxAnswerCacheEntries = 10_000
 )
 
 var dataTruncatedErr = errors.New("Udp datagram truncated, retry with tcp")
@@ -72,6 +73,10 @@ var serverNoRespErr = fmt.Errorf("Server didn't respond after %d retries ", retr
 
 const udpNet = "udp"
 const tcpNet = "tcp"
+
+func NewResolver() *Resolver {
+	return &Resolver{logger: slog.Default(), Cache: NewCache(), History: nil, DomainPolicy: nil}
+}
 
 func (r *Resolver) queryQ(ctx context.Context, q dns.Question, server string, net string) (*dns.Msg, error) {
 	msg := new(dns.Msg)
@@ -185,8 +190,15 @@ func containsSoa(ns []dns.RR) bool {
 
 type Zone = string
 type Cache struct {
-	store map[Zone]map[string]NS_RR
-	mu    sync.RWMutex
+	store       map[Zone]map[string]NS_RR
+	mu          sync.RWMutex
+	answerStore map[string]Answer
+	answerMu    sync.Mutex
+}
+
+type Answer struct {
+	ttl int64
+	m   *dns.Msg
 }
 
 func canonicalDNSName(name string) (string, bool) {
@@ -197,8 +209,10 @@ func canonicalDNSName(name string) (string, bool) {
 
 func NewCache() *Cache {
 	return &Cache{
-		store: make(map[Zone]map[string]NS_RR),
-		mu:    sync.RWMutex{},
+		store:       make(map[Zone]map[string]NS_RR),
+		mu:          sync.RWMutex{},
+		answerMu:    sync.Mutex{},
+		answerStore: make(map[string]Answer),
 	}
 }
 
@@ -252,6 +266,122 @@ func (c *Cache) PushRREntry(zone string, ns_name string, ns_rr NS_RR) {
 		ns_rr.ipExpiresAt = now + int64(ns_rr.Hdr.Ttl)
 	}
 	c.store[zone][ns_name] = cloneNSRR(ns_rr)
+}
+
+func (c *Cache) PushAnswerMsg(queryKey string, msg *dns.Msg) {
+	c.answerMu.Lock()
+	defer c.answerMu.Unlock()
+	var ansTtl uint32
+	var set bool
+
+	if msg == nil {
+		return
+	}
+
+	for _, rr := range msg.Ns {
+		if !set {
+			ansTtl = rr.Header().Ttl
+			set = true
+		}
+		if rr, ok := rr.(*dns.SOA); ok {
+			ansTtl = min(ansTtl, min(rr.Header().Ttl, rr.Minttl))
+		}
+		ansTtl = min(ansTtl, rr.Header().Ttl)
+	}
+
+	for _, rr := range msg.Extra {
+		if _, ok := rr.(*dns.OPT); ok {
+			continue
+		}
+		if !set {
+			ansTtl = rr.Header().Ttl
+			set = true
+			continue
+		}
+		ansTtl = min(ansTtl, rr.Header().Ttl)
+	}
+
+	for _, rr := range msg.Answer {
+		if !set {
+			ansTtl = rr.Header().Ttl
+			set = true
+			continue
+		}
+		ansTtl = min(ansTtl, rr.Header().Ttl)
+	}
+	if !set || ansTtl == 0 {
+		return
+	}
+
+	now := time.Now().Unix()
+	if _, exists := c.answerStore[queryKey]; !exists && len(c.answerStore) >= maxAnswerCacheEntries {
+		var evictKey string
+		var evictExpiresAt int64
+		foundEviction := false
+		for key, answer := range c.answerStore {
+			if answer.ttl <= now {
+				delete(c.answerStore, key)
+				continue
+			}
+			if !foundEviction || answer.ttl < evictExpiresAt || answer.ttl == evictExpiresAt && key < evictKey {
+				evictKey = key
+				evictExpiresAt = answer.ttl
+				foundEviction = true
+			}
+		}
+		if len(c.answerStore) >= maxAnswerCacheEntries && foundEviction {
+			delete(c.answerStore, evictKey)
+		}
+	}
+
+	c.answerStore[queryKey] = Answer{
+		now + int64(ansTtl),
+		msg.Copy(),
+	}
+}
+
+func (c *Cache) GetAnswer(msg *dns.Msg) (*dns.Msg, bool) {
+	c.answerMu.Lock()
+	defer c.answerMu.Unlock()
+	if len(msg.Question) == 0 {
+		return nil, false
+	}
+	q := msg.Question[0].String()
+	ret, ok := c.answerStore[q]
+	t := time.Now().Unix()
+
+	if ok {
+		cached := ret.m.Copy()
+		if t >= ret.ttl {
+			delete(c.answerStore, q)
+			return nil, false
+		}
+
+		for _, rr := range cached.Answer {
+			if rr.Header().Rrtype != dns.TypeOPT {
+				ttl := ret.ttl - t
+				rr.Header().Ttl = uint32(max(int64(0), ttl))
+			}
+		}
+		var extr []dns.RR
+		for _, rr := range cached.Extra {
+			if rr.Header().Rrtype != dns.TypeOPT {
+				ttl := ret.ttl - t
+				rr.Header().Ttl = uint32(max(int64(0), ttl))
+				extr = append(extr, rr)
+			}
+		}
+		cached.Extra = extr
+		for _, rr := range cached.Ns {
+			if rr.Header().Rrtype != dns.TypeOPT {
+				ttl := ret.ttl - t
+				rr.Header().Ttl = uint32(max(int64(0), ttl))
+			}
+		}
+		return cached, ok
+	} else {
+		return nil, false
+	}
 }
 
 func (c *Cache) GetZoneRR(zone string) (map[string]NS_RR, bool) {
@@ -565,8 +695,8 @@ func (r *Resolver) handleRefferencesContext(ctx context.Context, q dns.Question,
 			nsName := unresolved[0]
 			// Break circular in-bailiwick lookups by forcing the address lookup through the parent zone.
 			// for example cache:
-			// zone cvut.cz 
-			// ns 	ns.cvut.cz 
+			// zone cvut.cz
+			// ns 	ns.cvut.cz
 			// ip 	none
 			// Try to resolve cvut.cz, figure that we need to resolve ns.cvut.cz, it is fine up to moment
 			// when they have shared cache and ns.cvut.cz tries to ask closest zone which is again cvut.cz
@@ -706,7 +836,13 @@ func (r *Resolver) handleRefferencesContext(ctx context.Context, q dns.Question,
 }
 
 func (r *Resolver) resolveQ(q dns.Question, depth int) (*dns.Msg, error) {
-	return r.resolveQContext(context.Background(), q, depth)
+	queryCacheKey := q.String()
+	resp, err := r.resolveQContext(context.Background(), q, depth)
+
+	if err == nil {
+		r.Cache.PushAnswerMsg(queryCacheKey, resp)
+	}
+	return resp, err
 }
 
 func (r *Resolver) resolveQContext(ctx context.Context, q dns.Question, depth int) (*dns.Msg, error) {
@@ -787,6 +923,13 @@ func (r *Resolver) handleAll(w dns.ResponseWriter, m *dns.Msg) {
 				Minttl:  blockedResponseTTL,
 			})
 			r.recordRequest("client", w.RemoteAddr().Network(), w.RemoteAddr().String(), q, dns.RcodeToString[dns.RcodeNameError], time.Since(started))
+		} else if cachedAns, ok := r.Cache.GetAnswer(msg); ok {
+			slog.Info("Got direct from cache")
+			msg.Answer = append(msg.Answer, cachedAns.Answer...)
+			msg.Rcode = cachedAns.Rcode
+			msg.Ns = cachedAns.Ns
+			msg.Extra = cachedAns.Extra
+			r.recordRequest("client", w.RemoteAddr().Network(), w.RemoteAddr().String(), q, dns.RcodeToString[msg.Rcode], time.Since(started))
 		} else {
 			resp, err := r.resolveQ(q, 0)
 			result := dns.RcodeToString[dns.RcodeServerFailure]
@@ -825,4 +968,3 @@ func (r *Resolver) handleAll(w dns.ResponseWriter, m *dns.Msg) {
 func (r *Resolver) isDomainAllowed(domain string) bool {
 	return r.DomainPolicy == nil || r.DomainPolicy.IsAllowed(domain)
 }
-

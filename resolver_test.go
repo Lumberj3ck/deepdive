@@ -113,7 +113,7 @@ func TestCacheRejectsMalformedZone(t *testing.T) {
 }
 
 func TestResolutionDepthLimit(t *testing.T) {
-	resolver := &Resolver{}
+	resolver := NewResolver()
 	_, err := resolver.resolveQ(NewQuestion("example.com", dns.TypeA), maxResolveDepth)
 	if !errors.Is(err, ErrResolveDepthExceeded) {
 		t.Fatalf("resolve error = %v, want depth limit", err)
@@ -325,7 +325,8 @@ func TestCNAMEResolvePath(t *testing.T) {
 
 	for _, test := range testCases {
 		t.Run(test.name, func(t *testing.T) {
-			r := Resolver{logger: logger, Cache: NewCache()}
+			r := NewResolver()
+			r.logger = logger
 			q := NewQuestion(test.name, dns.TypeMX)
 			resp, err := r.resolveQ(q, 0)
 			if err != nil {
@@ -366,7 +367,8 @@ func TestResolveWithWarmCache(t *testing.T) {
 		writer = os.Stdout
 	}
 	logger := slog.New(slog.NewTextHandler(writer, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	r := Resolver{logger: logger, Cache: NewCache()}
+	r := NewResolver()
+	r.logger = logger
 
 	for range 2 {
 		for _, test := range testCases {

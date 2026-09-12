@@ -38,7 +38,9 @@ func main() {
 		slog.Error("Failed to load domain policies", "err", err)
 		os.Exit(1)
 	}
-	resolver := &Resolver{logger: slog.Default(), Cache: NewCache(), History: history, DomainPolicy: policy}
+	resolver := NewResolver()
+	resolver.History = history
+	resolver.DomainPolicy = policy
 	dns.HandleFunc(".", resolver.handleAll)
 	var wg chan struct{}
 
