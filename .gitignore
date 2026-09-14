@@ -10,3 +10,11 @@ android/**/build/
 *.iml
 
 *.db
+client-ca.key
+client-ca.pem
+client-ca.srl
+client.csr
+client.ext
+client-key.pem
+client.pem
+
