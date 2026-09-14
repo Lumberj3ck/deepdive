@@ -49,6 +49,28 @@ var safeBelt = map[string]NS_RR{
 	},
 }
 
+func rootHintsForServer(address string) (map[string]NS_RR, error) {
+	ip := net.ParseIP(address)
+	if ip == nil || ip.To4() == nil {
+		return nil, fmt.Errorf("root server must be an IPv4 address: %q", address)
+	}
+
+	const name = "a.root."
+	return map[string]NS_RR{
+		name: {
+			ip: append(net.IP(nil), ip...),
+			NS: dns.NS{
+				Hdr: dns.RR_Header{
+					Name:   ".",
+					Rrtype: dns.TypeNS,
+					Class:  dns.ClassINET,
+				},
+				Ns: name,
+			},
+		},
+	}, nil
+}
+
 var notFoundErr = fmt.Errorf("Couldn't find any answers for given query")
 
 type Resolver struct {
