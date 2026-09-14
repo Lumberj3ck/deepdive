@@ -2,8 +2,11 @@ package main
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"flag"
+	"fmt"
+	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -17,10 +20,25 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+func loadCertPool(path string) (*x509.CertPool, error) {
+	pemData, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pemData) {
+		return nil, fmt.Errorf("no certificates found in %s", path)
+	}
+
+	return pool, nil
+}
 
 func main() {
 	certFile := flag.String("cert", "/etc/fullchain.pem", "TLS certificate chain")
 	privKeyFile := flag.String("privkey", "/etc/privkey.pem", "TLS private key")
+	clientCaFile := flag.String("clientCa", "/etc/resolvy/tls/client-ca.pem", "TLS private key")
+
 	host := flag.String("bind", "127.0.0.1:5356", "DNS server bind address")
 	adminUser := flag.String("admin-user", "admin", "Admin dashboard username")
 	adminPassword := flag.String("admin-password", "", "Admin dashboard password; empty disables the dashboard")
@@ -95,9 +113,17 @@ func main() {
 
 	cert, err := tls.LoadX509KeyPair(*certFile, *privKeyFile)
 
+
 	if err == nil {
+		clientCAs, err := loadCertPool(*clientCaFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+
 		tcpTlsServer.TLSConfig = &tls.Config{
 			Certificates: []tls.Certificate{cert},
+			ClientAuth: tls.RequireAndVerifyClientCert,
+			ClientCAs: clientCAs,
 		}
 
 		go func() {

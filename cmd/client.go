@@ -25,6 +25,7 @@ func handleExchange(c *dns.Client, domain string, serverAddr string){
 	slog.Info("Response ", "answer", d.Answer, "RR amount", len(d.Answer))
 	if d.Truncated {
 		c.Net = "tcp"
+
 		d, _, err := c.Exchange(m, serverAddr)
 
 		if err != nil {
@@ -51,6 +52,16 @@ func main() {
 
 	c := new(dns.Client)
 	if *tcpTLS {
+		clientCert, err := tls.LoadX509KeyPair(
+			"client.pem",
+			"client-key.pem",
+		)
+
+		if err != nil {
+			slog.Warn(err.Error())
+			return
+		}
+
 		serverName := strings.Split(*host, ":")
 		if len(serverName) < 2 {
 			slog.Warn("Expected host in host:port format")
@@ -61,6 +72,7 @@ func main() {
 		c.TLSConfig = &tls.Config{
 			ServerName: serverName[0],
 			MinVersion: tls.VersionTLS12,
+			Certificates: []tls.Certificate{clientCert},
 		}
 	}
 
