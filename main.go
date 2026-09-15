@@ -69,6 +69,15 @@ func main() {
 	resolver := NewResolver()
 	resolver.History = history
 	resolver.DomainPolicy = policy
+	var metricsRegistry *prometheus.Registry
+	if *metricsBind != "" {
+		metricsRegistry = prometheus.NewRegistry()
+		metricsRegistry.MustRegister(
+			collectors.NewGoCollector(),
+			collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+		)
+		resolver.Metrics = newResolverMetrics(metricsRegistry, resolver.Cache)
+	}
 	dns.HandleFunc(".", resolver.handleAll)
 	var wg chan struct{}
 
@@ -150,14 +159,8 @@ func main() {
 	}
 
 	if len(*metricsBind) != 0 {
-		reg := prometheus.NewRegistry()
-		reg.MustRegister(
-			collectors.NewGoCollector(),
-			collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		)
-
 		mux := http.NewServeMux()
-		mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+		mux.Handle("/metrics", promhttp.HandlerFor(metricsRegistry, promhttp.HandlerOpts{}))
 
 		metricsServer := http.Server{
 			Addr:    *metricsBind,
