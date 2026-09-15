@@ -1,0 +1,2 @@
+# Repeating this case exercises DeepDive's answer cache.
+cached.alpha.test. A

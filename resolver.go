@@ -49,6 +49,28 @@ var safeBelt = map[string]NS_RR{
 	},
 }
 
+func rootHintsForServer(address string) (map[string]NS_RR, error) {
+	ip := net.ParseIP(address)
+	if ip == nil || ip.To4() == nil {
+		return nil, fmt.Errorf("root server must be an IPv4 address: %q", address)
+	}
+
+	const name = "a.root."
+	return map[string]NS_RR{
+		name: {
+			ip: append(net.IP(nil), ip...),
+			NS: dns.NS{
+				Hdr: dns.RR_Header{
+					Name:   ".",
+					Rrtype: dns.TypeNS,
+					Class:  dns.ClassINET,
+				},
+				Ns: name,
+			},
+		},
+	}, nil
+}
+
 var notFoundErr = fmt.Errorf("Couldn't find any answers for given query")
 
 type Resolver struct {
@@ -56,6 +78,7 @@ type Resolver struct {
 	Cache        *Cache
 	History      *RequestHistory
 	DomainPolicy *DomainPolicy
+	Metrics      *resolverMetrics
 	queryFn      func(context.Context, dns.Question, string) (*dns.Msg, error)
 }
 
@@ -93,9 +116,7 @@ func (r *Resolver) queryQ(ctx context.Context, q dns.Question, server string, ne
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			started := time.Now()
-			resp, err := exchangeDNS(ctx, c, msg, server+":53")
-			r.recordRequest("upstream", net, server, q, responseResult(resp, err), time.Since(started))
+			resp, err := r.exchangeUpstream(ctx, c, msg, server, net, q)
 
 			if err != nil {
 				r.logger.Warn("Got err during dns query request: ", "err", err)
@@ -109,13 +130,27 @@ func (r *Resolver) queryQ(ctx context.Context, q dns.Question, server string, ne
 			return resp, nil
 		}
 	} else {
-		started := time.Now()
-		resp, err := exchangeDNS(ctx, c, msg, server+":53")
-		r.recordRequest("upstream", net, server, q, responseResult(resp, err), time.Since(started))
+		resp, err := r.exchangeUpstream(ctx, c, msg, server, net, q)
 		return resp, err
 	}
 
 	return &dns.Msg{}, serverNoRespErr
+}
+
+func (r *Resolver) exchangeUpstream(ctx context.Context, client *dns.Client, msg *dns.Msg, server, network string, q dns.Question) (*dns.Msg, error) {
+	started := time.Now()
+	if r.Metrics != nil {
+		r.Metrics.upstreamInFlight.WithLabelValues(network).Inc()
+		defer r.Metrics.upstreamInFlight.WithLabelValues(network).Dec()
+	}
+	resp, err := exchangeDNS(ctx, client, msg, server+":53")
+	duration := time.Since(started)
+	r.recordRequest("upstream", network, server, q, responseResult(resp, err), duration)
+	if r.Metrics != nil {
+		r.Metrics.upstreamQueries.WithLabelValues(network, upstreamResult(resp, err)).Inc()
+		r.Metrics.upstreamDuration.WithLabelValues(network).Observe(duration.Seconds())
+	}
+	return resp, err
 }
 
 func exchangeDNS(ctx context.Context, client *dns.Client, msg *dns.Msg, address string) (*dns.Msg, error) {
@@ -136,6 +171,9 @@ func exchangeDNS(ctx context.Context, client *dns.Client, msg *dns.Msg, address 
 }
 
 func (r *Resolver) recordRequest(direction, network, peer string, q dns.Question, result string, duration time.Duration) {
+	if r.History == nil {
+		return
+	}
 	qtype := dns.TypeToString[q.Qtype]
 	if qtype == "" {
 		qtype = strconv.Itoa(int(q.Qtype))
@@ -382,6 +420,35 @@ func (c *Cache) GetAnswer(msg *dns.Msg) (*dns.Msg, bool) {
 	} else {
 		return nil, false
 	}
+}
+
+func (c *Cache) answerEntryCount() int {
+	c.answerMu.Lock()
+	defer c.answerMu.Unlock()
+
+	now := time.Now().Unix()
+	count := 0
+	for key, answer := range c.answerStore {
+		if answer.ttl <= now {
+			delete(c.answerStore, key)
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+func (c *Cache) delegationEntryCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	now := time.Now().Unix()
+	count := 0
+	for zone := range c.store {
+		c.removeExpiredLocked(zone, now)
+		count += len(c.store[zone])
+	}
+	return count
 }
 
 func (c *Cache) GetZoneRR(zone string) (map[string]NS_RR, bool) {
@@ -792,11 +859,13 @@ func (r *Resolver) handleRefferencesContext(ctx context.Context, q dns.Question,
 				}
 			}
 
+			isReferral := false
 			for _, rr := range resp.Ns {
 				nsRR, ok := rr.(*dns.NS)
 				if !ok {
 					continue
 				}
+				isReferral = true
 
 				zoneName := dns.CanonicalName(nsRR.Header().Name)
 				nsName := dns.CanonicalName(nsRR.Ns)
@@ -814,6 +883,9 @@ func (r *Resolver) handleRefferencesContext(ctx context.Context, q dns.Question,
 					cached = NS_RR{NS: ns}
 				}
 				r.Cache.PushRREntry(zoneName, nsName, cached)
+			}
+			if isReferral && r.Metrics != nil {
+				r.Metrics.resolutionSteps.WithLabelValues("referral").Inc()
 			}
 
 			nextZone := r.Cache.getClosestZone(q.Name)
@@ -890,6 +962,9 @@ func (r *Resolver) resolveQContext(ctx context.Context, q dns.Question, depth in
 				return nil, notFoundErr
 			}
 			visitedAliases[cnameTarget] = true
+			if r.Metrics != nil {
+				r.Metrics.resolutionSteps.WithLabelValues("cname").Inc()
+			}
 			q.Name = cnameTarget
 			r.logger.Debug("Resolving CNAME", "target", q.Name)
 			continue
@@ -902,15 +977,25 @@ func (r *Resolver) resolveQContext(ctx context.Context, q dns.Question, depth in
 }
 
 func (r *Resolver) handleAll(w dns.ResponseWriter, m *dns.Msg) {
+	started := time.Now()
+	network := metricNetwork(w.RemoteAddr().Network())
+	if r.Metrics != nil {
+		r.Metrics.clientInFlight.WithLabelValues(network).Inc()
+		defer r.Metrics.clientInFlight.WithLabelValues(network).Dec()
+	}
+
 	msg := new(dns.Msg)
 	msg.SetReply(m)
+	qtype := uint16(0)
+	source := "invalid"
 
 	if len(m.Question) != 1 {
 		msg.Rcode = dns.RcodeFormatError
 	} else {
 		q := m.Question[0]
-		started := time.Now()
+		qtype = q.Qtype
 		if !r.isDomainAllowed(q.Name) {
+			source = "policy"
 			msg.Rcode = dns.RcodeNameError
 			msg.Ns = append(msg.Ns, &dns.SOA{
 				Hdr:     dns.RR_Header{Name: q.Name, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: blockedResponseTTL},
@@ -922,8 +1007,15 @@ func (r *Resolver) handleAll(w dns.ResponseWriter, m *dns.Msg) {
 				Expire:  86400,
 				Minttl:  blockedResponseTTL,
 			})
+			if r.Metrics != nil {
+				r.Metrics.policyBlockedQueries.WithLabelValues(network, metricQType(q.Qtype)).Inc()
+			}
 			r.recordRequest("client", w.RemoteAddr().Network(), w.RemoteAddr().String(), q, dns.RcodeToString[dns.RcodeNameError], time.Since(started))
 		} else if cachedAns, ok := r.Cache.GetAnswer(msg); ok {
+			source = "cache"
+			if r.Metrics != nil {
+				r.Metrics.answerCacheLookups.WithLabelValues("hit").Inc()
+			}
 			slog.Info("Got direct from cache")
 			msg.Answer = append(msg.Answer, cachedAns.Answer...)
 			msg.Rcode = cachedAns.Rcode
@@ -931,11 +1023,19 @@ func (r *Resolver) handleAll(w dns.ResponseWriter, m *dns.Msg) {
 			msg.Extra = cachedAns.Extra
 			r.recordRequest("client", w.RemoteAddr().Network(), w.RemoteAddr().String(), q, dns.RcodeToString[msg.Rcode], time.Since(started))
 		} else {
+			source = "recursion"
+			if r.Metrics != nil {
+				r.Metrics.answerCacheLookups.WithLabelValues("miss").Inc()
+			}
 			resp, err := r.resolveQ(q, 0)
 			result := dns.RcodeToString[dns.RcodeServerFailure]
 			if err != nil {
+				source = "error"
 				msg.Rcode = dns.RcodeServerFailure
 				slog.Error("Got err during resolve: ", "err", err)
+				if r.Metrics != nil {
+					r.Metrics.resolutionErrors.WithLabelValues(resolutionErrorReason(err)).Inc()
+				}
 			} else {
 				msg.Rcode = resp.Rcode
 				msg.Answer = append(msg.Answer, resp.Answer...)
@@ -960,6 +1060,10 @@ func (r *Resolver) handleAll(w dns.ResponseWriter, m *dns.Msg) {
 
 		msg.Truncate(size)
 	}
+	if msg.Truncated && r.Metrics != nil {
+		r.Metrics.clientTruncated.WithLabelValues(network).Inc()
+	}
+	r.Metrics.observeClient(network, qtype, msg.Rcode, source, started, msg.Len())
 	if err := w.WriteMsg(msg); err != nil {
 		slog.Error("WriteMsg failed: ", "err: ", err)
 	}

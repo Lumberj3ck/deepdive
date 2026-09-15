@@ -1,0 +1,3 @@
+# {n} is replaced with the request sequence number.
+q-{n}.alpha.test. A
+q-{n}.beta.test. A

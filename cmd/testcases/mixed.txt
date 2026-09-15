@@ -1,0 +1,7 @@
+# Duplicate lines to change the relative weight of a case.
+cached.alpha.test. A
+q-{n}.alpha.test. A
+q-{n}.alpha.test. A
+q-{n}.beta.test. A
+alias.alias.test. A
+q-{n}.negative.test. A
