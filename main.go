@@ -46,8 +46,8 @@ func main() {
 	adminHost := flag.String("admin-bind", "127.0.0.1:8080", "Admin dashboard bind address")
 	policyToken := flag.String("policy-token", "", "Policy API token; empty disables the API")
 	policyHost := flag.String("policy-bind", "127.0.0.1:8081", "Policy API bind address")
+	metricsBind := flag.String("metrics-bind", "", "Where to start listening for prom server requests. If not specified, will not be listening")
 
-	startMetrics := flag.Bool("metrics", false, "Start prometheus metrics client.")
 	flag.Parse()
 	if *rootServer != "" {
 		rootHints, err := rootHintsForServer(*rootServer)
@@ -149,7 +149,7 @@ func main() {
 		slog.Info("Couldn't start tcp tls server: ", "err", err)
 	}
 
-	if *startMetrics {
+	if len(*metricsBind) != 0 {
 		reg := prometheus.NewRegistry()
 		reg.MustRegister(
 			collectors.NewGoCollector(),
@@ -160,7 +160,7 @@ func main() {
 		mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 
 		metricsServer := http.Server{
-			Addr:    ":9091",
+			Addr:    *metricsBind,
 			Handler: mux,
 		}
 
