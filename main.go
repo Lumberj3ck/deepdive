@@ -37,7 +37,7 @@ func loadCertPool(path string) (*x509.CertPool, error) {
 func main() {
 	certFile := flag.String("cert", "/etc/fullchain.pem", "TLS certificate chain")
 	privKeyFile := flag.String("privkey", "/etc/privkey.pem", "TLS private key")
-	clientCaFile := flag.String("clientCa", "/etc/resolvy/tls/client-ca.pem", "TLS private key")
+	clientCaFile := flag.String("clientCa", "", "CA certificate used to verify mTLS clients; empty disables mTLS")
 
 	host := flag.String("bind", "127.0.0.1:5356", "DNS server bind address")
 	rootServer := flag.String("root-server", "", "IPv4 address of a custom root server; empty uses the public DNS roots")
@@ -133,15 +133,17 @@ func main() {
 	cert, err := tls.LoadX509KeyPair(*certFile, *privKeyFile)
 
 	if err == nil {
-		clientCAs, err := loadCertPool(*clientCaFile)
-		if err != nil {
-			log.Fatal(err)
-		}
-
 		tcpTlsServer.TLSConfig = &tls.Config{
 			Certificates: []tls.Certificate{cert},
-			ClientAuth:   tls.RequireAndVerifyClientCert,
-			ClientCAs:    clientCAs,
+			MinVersion:   tls.VersionTLS12,
+		}
+		if *clientCaFile != "" {
+			clientCAs, err := loadCertPool(*clientCaFile)
+			if err != nil {
+				log.Fatal(err)
+			}
+			tcpTlsServer.TLSConfig.ClientAuth = tls.RequireAndVerifyClientCert
+			tcpTlsServer.TLSConfig.ClientCAs = clientCAs
 		}
 
 		go func() {
@@ -153,7 +155,7 @@ func main() {
 
 			wg <- struct{}{}
 		}()
-		slog.Info("Started tcp tls servers at: ", "host", *host)
+		slog.Info("Started tcp tls servers at: ", "host", *host, "mtls", *clientCaFile != "")
 	} else {
 		slog.Info("Couldn't start tcp tls server: ", "err", err)
 	}
