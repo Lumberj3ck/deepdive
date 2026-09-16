@@ -75,10 +75,10 @@ func loadTestCases(path string) ([]testCase, error) {
 	return testCases, nil
 }
 
-func execute(client *dns.Client, server string, job task) error {
+func execute(client *dns.Client, conn *dns.Conn, job task) error {
 	message := new(dns.Msg)
 	message.SetQuestion(dns.Fqdn(job.domain()), job.testCase.qtype)
-	_, _, err := client.Exchange(message, server)
+	_, _, err := client.ExchangeWithConn(message, conn)
 	return err
 }
 
@@ -212,8 +212,25 @@ func main() {
 		go func() {
 			defer workerGroup.Done()
 			client := *baseClient
+			var conn *dns.Conn
+			defer func() {
+				if conn != nil {
+					_ = conn.Close()
+				}
+			}()
 			for job := range tasks {
-				if err := execute(&client, *host, job); err != nil {
+				var err error
+				if conn == nil {
+					conn, err = client.Dial(*host)
+				}
+				if err == nil {
+					err = execute(&client, conn, job)
+				}
+				if err != nil {
+					if conn != nil {
+						_ = conn.Close()
+						conn = nil
+					}
 					failureNumber := failures.Add(1)
 					if failureNumber <= 5 {
 						slog.Warn("DNS request failed", "domain", job.domain(), "type", dns.TypeToString[job.testCase.qtype], "err", err)
