@@ -986,6 +986,7 @@ func (r *Resolver) handleAll(w dns.ResponseWriter, m *dns.Msg) {
 
 	msg := new(dns.Msg)
 	msg.SetReply(m)
+	msg.RecursionAvailable = true
 	qtype := uint16(0)
 	source := "invalid"
 
@@ -1051,14 +1052,13 @@ func (r *Resolver) handleAll(w dns.ResponseWriter, m *dns.Msg) {
 		}
 	}
 
+	size := uint16(dns.MinMsgSize)
+	if opt := m.IsEdns0(); opt != nil {
+		size = max(size, opt.UDPSize())
+		msg.SetEdns0(size, false)
+	}
 	if w.RemoteAddr().Network() == "udp" {
-		size := dns.MinMsgSize
-
-		if opt := m.IsEdns0(); opt != nil {
-			size = int(opt.UDPSize())
-		}
-
-		msg.Truncate(size)
+		msg.Truncate(int(size))
 	}
 	if msg.Truncated && r.Metrics != nil {
 		r.Metrics.clientTruncated.WithLabelValues(network).Inc()

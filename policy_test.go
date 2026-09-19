@@ -170,6 +170,7 @@ func TestResolverReturnsCacheableNXDOMAINForBlockedDomain(t *testing.T) {
 	resolver := &Resolver{History: NewRequestHistory(10), DomainPolicy: policy}
 	request := new(dns.Msg)
 	request.SetQuestion("blocked.example.", dns.TypeA)
+	request.SetEdns0(1232, false)
 	writer := &recordingDNSWriter{
 		local:  &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5356},
 		remote: &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 12345},
@@ -181,6 +182,16 @@ func TestResolverReturnsCacheableNXDOMAINForBlockedDomain(t *testing.T) {
 	}
 	if writer.message.Rcode != dns.RcodeNameError {
 		t.Fatalf("rcode = %s, want NXDOMAIN", dns.RcodeToString[writer.message.Rcode])
+	}
+	if !writer.message.RecursionAvailable {
+		t.Fatal("recursive response did not set RA")
+	}
+	opt := writer.message.IsEdns0()
+	if opt == nil {
+		t.Fatal("EDNS request did not receive an OPT response")
+	}
+	if opt.UDPSize() != 1232 {
+		t.Fatalf("OPT UDP size = %d, want 1232", opt.UDPSize())
 	}
 	if len(writer.message.Ns) != 1 {
 		t.Fatalf("authority records = %d, want 1", len(writer.message.Ns))
